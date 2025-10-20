@@ -1,5 +1,6 @@
 # main.py — AI Halyava Bot (Py 3.13.4, aiogram 3.22)
-# One-file, long-polling; SQLite + APScheduler; улучшенный сбор промо + поиск по магазину
+# One-file, long-polling; SQLite + APScheduler; авто-сбор промо + поиск по магазину
+
 import os, sqlite3, datetime, hashlib, json, asyncio, logging, re, time
 from typing import Optional, List, Dict
 from urllib.parse import urljoin
@@ -68,7 +69,7 @@ DEFAULT_STORES_JSON = """
 }
 """
 
-# Алиасы для упрощённого поиска по названию магазина (юзер вводит «озон» → ozon)
+# Алиасы для упрощённого поиска по названию магазина
 ALIASES: Dict[str, str] = {
     "ozon": "ozon", "озон": "ozon",
     "wildberries": "wb", "вб": "wb", "wb": "wb", "вайлдберриз": "wb", "вайлдберрис": "wb",
@@ -100,80 +101,87 @@ ALIASES: Dict[str, str] = {
     "metro": "metro", "метро": "metro",
     "sbermarket": "sbermarket", "сбермаркет": "sbermarket",
 
-    "deliveryclub": "deliveryclub", "доставклаб": "deliveryclub", "деливери": "deliveryclub",
+    "deliveryclub": "deliveryclub", "деливери": "deliveryclub"
 }
 
 # Промокоды для MVP: ENV PROMO_CODES="VIP,TEST1"
 PROMO_CODES = {c.strip() for c in os.environ.get("PROMO_CODES", "").split(",") if c.strip()}
 
-# ======== DB LAYER ========
-def connect() -> sqlite3.Connection:
-    os.makedirs(os.path.dirname(DB_PATH), exist_ok=True)
-    conn = sqlite3.connect(DB_PATH, timeout=60.0, check_same_thread=False)
-    conn.row_factory = sqlite3.Row
-    conn.execute("PRAGMA journal_mode=WAL;")
-    conn.execute("PRAGMA synchronous=NORMAL;")
-    conn.execute("PRAGMA busy_timeout=60000;")
-    return conn
+# ======== DB (один коннект + анти-lock) ========
+_DB_CONN: Optional[sqlite3.Connection] = None
+
+def get_conn() -> sqlite3.Connection:
+    global _DB_CONN
+    if _DB_CONN is None:
+        os.makedirs(os.path.dirname(DB_PATH), exist_ok=True)
+        _DB_CONN = sqlite3.connect(DB_PATH, timeout=60.0, check_same_thread=False)
+        _DB_CONN.row_factory = sqlite3.Row
+        _DB_CONN.execute("PRAGMA journal_mode=WAL;")
+        _DB_CONN.execute("PRAGMA synchronous=NORMAL;")
+        _DB_CONN.execute("PRAGMA busy_timeout=60000;")
+    return _DB_CONN
 
 def init_db():
-    with connect() as conn:
-        conn.executescript("""
-        CREATE TABLE IF NOT EXISTS users(
-          user_id INTEGER PRIMARY KEY,
-          username TEXT,
-          created_at TEXT DEFAULT CURRENT_TIMESTAMP
-        );
-        CREATE TABLE IF NOT EXISTS subscriptions(
-          user_id INTEGER PRIMARY KEY,
-          status TEXT,
-          until TEXT,
-          plan TEXT,
-          updated_at TEXT DEFAULT CURRENT_TIMESTAMP
-        );
-        CREATE TABLE IF NOT EXISTS deals(
-          id INTEGER PRIMARY KEY AUTOINCREMENT,
-          store_slug TEXT,
-          category TEXT,
-          title TEXT,
-          description TEXT,
-          url TEXT,
-          price_old REAL,
-          price_new REAL,
-          cashback REAL,
-          coupon_code TEXT,
-          start_at TEXT,
-          end_at TEXT,
-          created_at TEXT DEFAULT CURRENT_TIMESTAMP,
-          source TEXT,
-          hash TEXT UNIQUE,
-          score REAL DEFAULT 0
-        );
-        CREATE INDEX IF NOT EXISTS idx_deals_store ON deals(store_slug);
-        CREATE INDEX IF NOT EXISTS idx_deals_cat ON deals(category);
-        CREATE INDEX IF NOT EXISTS idx_deals_end ON deals(end_at);
-        """)
+    conn = get_conn()
+    conn.executescript("""
+    CREATE TABLE IF NOT EXISTS users(
+      user_id INTEGER PRIMARY KEY,
+      username TEXT,
+      created_at TEXT DEFAULT CURRENT_TIMESTAMP
+    );
+    CREATE TABLE IF NOT EXISTS subscriptions(
+      user_id INTEGER PRIMARY KEY,
+      status TEXT,
+      until TEXT,
+      plan TEXT,
+      updated_at TEXT DEFAULT CURRENT_TIMESTAMP
+    );
+    CREATE TABLE IF NOT EXISTS deals(
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      store_slug TEXT,
+      category TEXT,
+      title TEXT,
+      description TEXT,
+      url TEXT,
+      price_old REAL,
+      price_new REAL,
+      cashback REAL,
+      coupon_code TEXT,
+      start_at TEXT,
+      end_at TEXT,
+      created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+      source TEXT,
+      hash TEXT UNIQUE,
+      score REAL DEFAULT 0
+    );
+    CREATE INDEX IF NOT EXISTS idx_deals_store ON deals(store_slug);
+    CREATE INDEX IF NOT EXISTS idx_deals_cat ON deals(category);
+    CREATE INDEX IF NOT EXISTS idx_deals_end ON deals(end_at);
+    """)
+    conn.commit()
 
 def now_utc_iso() -> str:
     return datetime.datetime.now(datetime.timezone.utc).replace(tzinfo=None, microsecond=0).isoformat()
 
 def upsert_user(user_id:int, username:str=""):
-    with connect() as conn:
-        conn.execute("INSERT OR IGNORE INTO users(user_id, username) VALUES(?,?)", (user_id, username or ""))
+    conn = get_conn()
+    conn.execute("INSERT OR IGNORE INTO users(user_id, username) VALUES(?,?)", (user_id, username or ""))
+    conn.commit()
 
 def get_sub(user_id:int) -> Optional[dict]:
-    with connect() as conn:
-        r = conn.execute("SELECT status, until FROM subscriptions WHERE user_id=?", (user_id,)).fetchone()
+    conn = get_conn()
+    r = conn.execute("SELECT status, until FROM subscriptions WHERE user_id=?", (user_id,)).fetchone()
     return dict(r) if r else None
 
 def set_sub(user_id:int, status:str, until_iso:str, plan:str="monthly"):
-    with connect() as conn:
-        conn.execute("""
-            INSERT INTO subscriptions(user_id,status,until,plan,updated_at)
-            VALUES(?,?,?,?,?)
-            ON CONFLICT(user_id) DO UPDATE
-            SET status=excluded.status, until=excluded.until, updated_at=excluded.updated_at
-        """, (user_id, status, until_iso, plan, now_utc_iso()))
+    conn = get_conn()
+    conn.execute("""
+        INSERT INTO subscriptions(user_id,status,until,plan,updated_at)
+        VALUES(?,?,?,?,?)
+        ON CONFLICT(user_id) DO UPDATE
+        SET status=excluded.status, until=excluded.until, updated_at=excluded.updated_at
+    """, (user_id, status, until_iso, plan, now_utc_iso()))
+    conn.commit()
 
 def sub_active(user_id:int) -> bool:
     sub = get_sub(user_id)
@@ -184,11 +192,6 @@ def sub_active(user_id:int) -> bool:
         return False
 
 def grant_trial(user_id:int, days:int=TRIAL_DAYS) -> str:
-    until = (datetime.datetime.now(datetime.timezone utc:=datetime.timezone.utc).replace(tzinfo=None) + datetime.timedelta(days=days)).replace(microsecond=0).isoformat()
-    set_sub(user_id, "trial", until)
-    return until
-# ↑ В Python 3.13 допускается walrus? Чтобы не рисковать, перепишем без него:
-def grant_trial(user_id:int, days:int=TRIAL_DAYS) -> str:  # re-define (safe)
     until = (datetime.datetime.now(datetime.timezone.utc).replace(tzinfo=None) + datetime.timedelta(days=days)).replace(microsecond=0).isoformat()
     set_sub(user_id, "trial", until)
     return until
@@ -202,6 +205,7 @@ def _insert_with_retry(conn: sqlite3.Connection, sql: str, params: tuple, retrie
     for i in range(retries):
         try:
             conn.execute(sql, params)
+            conn.commit()
             return
         except sqlite3.OperationalError as e:
             if "locked" in str(e).lower() and i < retries-1:
@@ -210,16 +214,16 @@ def _insert_with_retry(conn: sqlite3.Connection, sql: str, params: tuple, retrie
             raise
 
 def put_deal(d:dict) -> bool:
+    conn = get_conn()
     h = hashlib.sha256((d.get("url","") + d.get("title","")).encode("utf-8")).hexdigest()
     d["hash"] = h
     keys = ["store_slug","category","title","description","url","price_old","price_new","cashback","coupon_code","start_at","end_at","source","score","hash"]
     vals = [d.get(k) for k in keys]
     try:
-        with connect() as conn:
-            _insert_with_retry(conn,
-                f"INSERT INTO deals({','.join(keys)}) VALUES({','.join(['?']*len(keys))})",
-                tuple(vals)
-            )
+        _insert_with_retry(conn,
+            f"INSERT INTO deals({','.join(keys)}) VALUES({','.join(['?']*len(keys))})",
+            tuple(vals)
+        )
         return True
     except sqlite3.IntegrityError:
         return False
@@ -228,27 +232,32 @@ def put_deal(d:dict) -> bool:
         return False
 
 def search_deals(store:Optional[str], limit:int=10) -> List[dict]:
-    q = "SELECT * FROM deals WHERE 1=1"
-    args = []
+    conn = get_conn()
+    q = (
+        "SELECT * FROM deals "
+        "WHERE 1=1 "
+        + ("AND store_slug=? " if store else "")
+        + "AND (end_at IS NULL OR end_at>=?) "
+        "ORDER BY score DESC, (end_at IS NULL) ASC, end_at ASC, created_at DESC "
+        "LIMIT ?"
+    )
+    args: List = []
     if store:
-        q += " AND store_slug=?"
         args.append(store)
-    q += " AND (end_at IS NULL OR end_at>=?)"
     args.append(now_utc_iso())
-    q += " ORDER BY score DESC, (end_at IS NULL) ASC, end_at ASC, created_at DESC LIMIT ?"
     args.append(limit)
-    with connect() as conn:
-        rows = conn.execute(q, tuple(args)).fetchall()
+    rows = conn.execute(q, tuple(args)).fetchall()
     return [dict(r) for r in rows]
 
 def cleanup_old(ttl_days: int = 14):
+    conn = get_conn()
     now = now_utc_iso()
     older_than = (datetime.datetime.now(datetime.timezone.utc).replace(tzinfo=None) - datetime.timedelta(days=ttl_days)).replace(microsecond=0).isoformat()
-    with connect() as conn:
-        deleted = conn.execute(
-            "DELETE FROM deals WHERE (end_at IS NOT NULL AND end_at < ?) OR (created_at < ?)",
-            (now, older_than),
-        ).rowcount
+    deleted = conn.execute(
+        "DELETE FROM deals WHERE (end_at IS NOT NULL AND end_at < ?) OR (created_at < ?)",
+        (now, older_than),
+    ).rowcount
+    conn.commit()
     log.info(f"[CLEANUP] deleted={deleted}")
 
 # ======== SCRAPERS ========
@@ -257,7 +266,6 @@ HEADERS = {
     "Accept-Language":"ru-RU,ru;q=0.9"
 }
 KEYWORDS = ["акци", "скид", "купон", "промо", "распрод", "sale", "%", "выгод", "бонус", "спец", "промокод", "coupon"]
-
 CLASS_HINTS = re.compile(r"(promo|action|sale|discount|deal|offer|bonus|coupon|kupon|akci|skid|выгод|акци|скид|спец|распрод)", re.I)
 
 def _extract_best_title(a_tag, soup) -> str:
@@ -266,20 +274,25 @@ def _extract_best_title(a_tag, soup) -> str:
         return text
     # ищем ближайший заголовок наверх
     for parent in a_tag.parents:
-        if not hasattr(parent, "get_text"): break
+        if not hasattr(parent, "get_text"):
+            break
         h = parent.find(["h1","h2","h3","h4","strong","b"])
         if h:
             t = " ".join(h.get_text().split())
             if t and len(t) >= 6:
                 return t
         if getattr(parent, "attrs", None):
-            cl = " ".join([parent.get("class",""), parent.get("id","")]) if isinstance(parent.get("class",""), str) else " ".join(parent.get("class",[]) or [])
+            cl = parent.get("id","")
+            classes = parent.get("class", [])
+            if isinstance(classes, list):
+                cl += " " + " ".join(classes)
+            else:
+                cl += " " + str(classes or "")
             if CLASS_HINTS.search(cl):
                 t = " ".join(parent.get_text().split())
                 t = re.sub(r"\s{2,}", " ", t)
                 if t and len(t) >= 12:
                     return t[:180]
-    # meta og:title как крайний вариант
     og = soup.find("meta", property="og:title")
     if og and og.get("content"):
         return og["content"].strip()
@@ -307,7 +320,7 @@ def scrape_auto(store, category, url) -> int:
             href = url
         title = " ".join(box.get_text().split())
         title = re.sub(r"\s{2,}", " ", title)
-        if not title or len(title) < 8: 
+        if not title or len(title) < 8:
             continue
         if href in seen:
             continue
@@ -326,11 +339,11 @@ def scrape_auto(store, category, url) -> int:
         lowt = (a.get_text() or "").lower()
         near_text = " ".join(a.get_text(separator=" ").split())
         if not any(k in lowt for k in KEYWORDS):
-            # попробуем подняться к родителю и поискать намёки
             par = a.find_parent(True)
             if not par:
                 continue
-            cl = " ".join(par.get("class", []) if isinstance(par.get("class", []), list) else [par.get("class","")]) + " " + par.get("id","")
+            classes = par.get("class", [])
+            cl = " ".join(classes if isinstance(classes, list) else [str(classes or "")]) + " " + par.get("id","")
             if not (any(k in near_text.lower() for k in KEYWORDS) or CLASS_HINTS.search(cl)):
                 continue
 
@@ -420,7 +433,7 @@ def run_all_sources() -> int:
                     s["url"], s["item_selector"], s["title_selector"], s["link_selector"],
                     s.get("desc_selector")
                 )
-            else:  # auto / auto_html / None
+            else:  # auto / None
                 total += scrape_auto(s["store"], s.get("category","другое"), s["url"])
         except Exception:
             log.exception(f"[SCRAPE] error store={s}")
@@ -466,7 +479,7 @@ async def cmd_start(m: Message):
         till = grant_trial(m.from_user.id, TRIAL_DAYS)
         await m.answer(
             "Привет! Включил бесплатный триал до {till}.\n"
-            "Команды: /search <магазин>, /buy, /profile, /stores, /redeem КОД, /help".format(till=till)
+            "Команды: /search &lt;магазин&gt;, /buy, /profile, /stores, /redeem &lt;код&gt;, /help".format(till=till)
         )
     else:
         await m.answer("Снова ты! Пробуй: /search ozon")
@@ -513,13 +526,10 @@ async def cmd_redeem(m: Message):
 
 @router.message(Command("stores"))
 async def cmd_stores(m: Message):
-    # Показать список известных магазинов из ALIASES (уникально по slug)
     seen = set()
     slugs = []
-    # Пройдёмся по DEFAULT_STORES_JSON, чтобы показать только реально поддерживаемые
     conf = json.loads(STORES_JSON or DEFAULT_STORES_JSON)
-    from_conf = [x["store"] for x in conf.get("stores", [])]
-    for slug in from_conf:
+    for slug in [x["store"] for x in conf.get("stores", [])]:
         if slug not in seen:
             seen.add(slug)
             slugs.append(slug)
@@ -539,7 +549,7 @@ async def cmd_search(m: Message):
             return await m.answer("Нужна активная подписка. /buy — оформить (есть триал в /start)")
         results = search_deals(store, limit=10)
         if not results:
-            # Мягко инициируем сбор и подскажем
+            # Пингуем сбор: через пару секунд пусть обновит
             asyncio.get_event_loop().call_later(1, lambda: asyncio.create_task(scrape_job()))
             return await m.answer("Пока пусто по этому магазину. Нажми /reload, подожди 10–20 сек и повтори запрос.")
         for d in results:
@@ -567,12 +577,13 @@ async def main():
     dp.include_router(router)
     global scheduler
     scheduler = AsyncIOScheduler(timezone=ZoneInfo(TIMEZONE))
-    scheduler.add_job(scrape_job, "interval", minutes=20, id="scrape")  # почаще
+    scheduler.add_job(scrape_job, "interval", minutes=20, id="scrape")
     scheduler.add_job(cleanup_old, "cron", hour=3, minute=0, id="cleanup")
     scheduler.start()
-    loop = asyncio.get_running_loop()
-    loop.call_later(5, lambda: asyncio.create_task(scrape_job()))
+    # первый сбор через 5 сек
+    asyncio.get_event_loop().call_later(5, lambda: asyncio.create_task(scrape_job()))
     await dp.start_polling(bot)
 
 if __name__ == "__main__":
     asyncio.run(main())
+        
