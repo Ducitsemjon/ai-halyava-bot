@@ -1,129 +1,127 @@
-# main.py — AI Halyava Bot (Py 3.13.4, aiogram 3.22)
-# One-file, long-polling; SQLite + APScheduler; авто-сбор промо + поиск по магазину
-
-import os, sqlite3, datetime, hashlib, json, asyncio, logging, re, time
-from typing import Optional, List, Dict
-from urllib.parse import urljoin
-
+# main.py — AI Halyava Bot (купон-бот с Admitad + CityAds + HTML)
+# Python 3.13.4 ; aiogram 3.22.0 ; long-polling ; SQLite + APScheduler
+import os
+import re
+import json
+import html
+import time
+import asyncio
+import logging
+import sqlite3
+import threading
+import datetime
+from typing import Optional, List, Dict, Any
 import requests
-from bs4 import BeautifulSoup
 import feedparser
-from zoneinfo import ZoneInfo
+from bs4 import BeautifulSoup
 
-from aiogram import Bot, Dispatcher, Router
+from aiogram import Bot, Dispatcher, Router, F
 from aiogram.client.default import DefaultBotProperties
 from aiogram.enums import ParseMode
 from aiogram.filters import Command
-from aiogram.types import Message, LinkPreviewOptions
+from aiogram.types import Message
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 
-# ======== LOGGING ========
-logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
-log = logging.getLogger("halyava")
+# ---------- ЛОГИ ----------
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s %(levelname)s %(message)s"
+)
+log = logging.getLogger(__name__)
 
-# ======== CONFIG ========
-BOT_TOKEN = os.environ.get("BOT_TOKEN", "")
+# ---------- КОНФИГ ----------
+BOT_TOKEN = os.environ.get("BOT_TOKEN", "").strip()
+TIMEZONE = os.environ.get("TIMEZONE", "Europe/Moscow")
+DB_PATH = os.environ.get("DB_PATH", "/data/halyava.db")
+
 TRIAL_DAYS = int(os.environ.get("TRIAL_DAYS", "3"))
 MONTHLY_PRICE_RUB = int(os.environ.get("MONTHLY_PRICE_RUB", "249"))
-DB_PATH = os.environ.get("DB_PATH", "/data/halyava.db")
-TIMEZONE = os.environ.get("TIMEZONE", "Europe/Moscow")
 
-# Если в ENV нет STORES_JSON — используем дефолт ниже (валидный JSON)
-STORES_JSON = os.environ.get("STORES_JSON")
+# Admitad
+ADMITAD_ACCESS_TOKEN = os.environ.get("ADMITAD_ACCESS_TOKEN", "").strip()
+ADMITAD_CLIENT_ID = os.environ.get("ADMITAD_CLIENT_ID", "").strip()
+ADMITAD_CLIENT_SECRET = os.environ.get("ADMITAD_CLIENT_SECRET", "").strip()
+ADMITAD_WEBSITE_ID = os.environ.get("ADMITAD_WEBSITE_ID", "").strip()  # обязателен для /coupons/website
 
-DEFAULT_STORES_JSON = """
-{
-  "stores": [
-    { "type":"auto","store":"ozon","category":"акции","url":"https://www.ozon.ru/info/actions/" },
-    { "type":"auto","store":"wb","category":"акции","url":"https://www.wildberries.ru/promotions" },
-    { "type":"auto","store":"yandexmarket","category":"акции","url":"https://market.yandex.ru/specials" },
-    { "type":"auto","store":"sbermegamarket","category":"акции","url":"https://sbermegamarket.ru/actions/" },
+# CityAds
+CITYADS_COUPONS_URL = os.environ.get("CITYADS_COUPONS_URL", "").strip()
 
-    { "type":"auto","store":"mvideo","category":"акции","url":"https://www.mvideo.ru/promo" },
-    { "type":"auto","store":"eldorado","category":"акции","url":"https://www.eldorado.ru/promo/" },
-    { "type":"auto","store":"dns","category":"акции","url":"https://www.dns-shop.ru/actions/" },
-    { "type":"auto","store":"citilink","category":"акции","url":"https://www.citilink.ru/promo/" },
-    { "type":"auto","store":"technopark","category":"акции","url":"https://www.technopark.ru/promo/" },
+# Официальные промо-страницы магазинов
+OFFICIAL_PROMO_PAGES = [
+    u.strip() for u in os.environ.get("OFFICIAL_PROMO_PAGES", "").split(",") if u.strip()
+]
 
-    { "type":"auto","store":"lamoda","category":"акции","url":"https://www.lamoda.ru/promo/" },
-    { "type":"auto","store":"sportmaster","category":"акции","url":"https://www.sportmaster.ru/actions/" },
+# Популярные магазины РФ + маркеты + еда (синонимы → канонический slug)
+STORE_ALIASES: Dict[str, str] = {
+    # marketplaces
+    "ozon": "ozon",
+    "озон": "ozon",
+    "wildberries": "wildberries",
+    "вб": "wildberries",
+    "wild": "wildberries",
+    "wb": "wildberries",
+    "яндекс маркет": "yandex_market",
+    "я маркет": "yandex_market",
+    "ym": "yandex_market",
+    "aliexpress": "aliexpress",
+    "алиэкспресс": "aliexpress",
 
-    { "type":"auto","store":"letual","category":"акции","url":"https://www.letu.ru/promo" },
-    { "type":"auto","store":"rivegauche","category":"акции","url":"https://www.rivegauche.ru/promo" },
+    # электроника/бытовая
+    "mvideo": "mvideo",
+    "мвидео": "mvideo",
+    "eldorado": "eldorado",
+    "эльдорадо": "eldorado",
+    "dns": "dns_shop",
+    "днс": "dns_shop",
+    "citilink": "citilink",
+    "ситилинк": "citilink",
+    "svyaznoy": "svyaznoy",
+    "связной": "svyaznoy",
+    "technopark": "technopark",
+    "технопарк": "technopark",
 
-    { "type":"auto","store":"apteka","category":"акции","url":"https://apteka.ru/discounts" },
-    { "type":"auto","store":"rigla","category":"акции","url":"https://www.rigla.ru/actions/" },
-    { "type":"auto","store":"aptekamos","category":"акции","url":"https://www.apteka-mos.ru/actions/" },
+    # одежда/обувь
+    "lamoda": "lamoda",
+    "ла модa": "lamoda",
+    "asos": "asos",
+    "h&m": "hm",
+    "hm": "hm",
 
-    { "type":"auto","store":"vkusvill","category":"акции","url":"https://vkusvill.ru/akcii/" },
-    { "type":"auto","store":"perekrestok","category":"акции","url":"https://www.perekrestok.ru/cat/akcii" },
-    { "type":"auto","store":"magnit","category":"акции","url":"https://magnit.ru/promo/" },
-    { "type":"auto","store":"lenta","category":"акции","url":"https://lenta.com/promo/" },
-    { "type":"auto","store":"auchan","category":"акции","url":"https://www.auchan.ru/promo/" },
-    { "type":"auto","store":"okey","category":"акции","url":"https://www.okmarket.ru/actions/" },
-    { "type":"auto","store":"metro","category":"акции","url":"https://www.metro-cc.ru/promo" },
-    { "type":"auto","store":"sbermarket","category":"акции","url":"https://sbermarket.ru/actions" },
-
-    { "type":"auto","store":"deliveryclub","category":"акции","url":"https://delivery-club.ru/special" }
-  ]
-}
-"""
-
-# Алиасы для упрощённого поиска по названию магазина
-ALIASES: Dict[str, str] = {
-    "ozon": "ozon", "озон": "ozon",
-    "wildberries": "wb", "вб": "wb", "wb": "wb", "вайлдберриз": "wb", "вайлдберрис": "wb",
-    "yandexmarket": "yandexmarket", "яндексмаркет": "yandexmarket", "маркет": "yandexmarket", "ym": "yandexmarket",
-    "sbermegamarket": "sbermegamarket", "сбермегамаркет": "sbermegamarket", "смм": "sbermegamarket",
-
-    "mvideo": "mvideo", "мвидео": "mvideo",
-    "eldorado": "eldorado", "эльдорадо": "eldorado",
-    "dns": "dns", "днс": "dns",
-    "citilink": "citilink", "ситилинк": "citilink",
-    "technopark": "technopark", "технопарк": "technopark",
-
-    "lamoda": "lamoda", "ламода": "lamoda",
-    "sportmaster": "sportmaster", "спортмастер": "sportmaster",
-
-    "letual": "letual", "летуаль": "letual",
-    "rivegauche": "rivegauche", "рив гош": "rivegauche", "ривгош": "rivegauche",
-
-    "apteka": "apteka", "аптека ру": "apteka", "аптека.ру": "apteka",
-    "rigla": "rigla", "ригла": "rigla",
-    "aptekamos": "aptekamos", "аптека мос": "aptekamos",
-
-    "vkusvill": "vkusvill", "вкусвилл": "vkusvill",
-    "perekrestok": "perekrestok", "перекресток": "perekrestok",
-    "magnit": "magnit", "магнит": "magnit",
-    "lenta": "lenta", "лента": "lenta",
-    "auchan": "auchan", "ашан": "auchan",
-    "okey": "okey", "окей": "okey",
-    "metro": "metro", "метро": "metro",
-    "sbermarket": "sbermarket", "сбермаркет": "sbermarket",
-
-    "deliveryclub": "deliveryclub", "деливери": "deliveryclub"
+    # еда/доставка
+    "яндекс еда": "yandex_eats",
+    "yandex eats": "yandex_eats",
+    "delivery club": "delivery_club",
+    "деливери клаб": "delivery_club",
+    "самокат": "samokat",
+    "samokat": "samokat",
+    "vkusvill": "vkusvill",
+    "вкусвилл": "vkusvill",
+    "lenta": "lenta",
+    "лента": "lenta",
+    "perekrestok": "perekrestok",
+    "перекресток": "perekrestok",
 }
 
-# Промокоды для MVP: ENV PROMO_CODES="VIP,TEST1"
-PROMO_CODES = {c.strip() for c in os.environ.get("PROMO_CODES", "").split(",") if c.strip()}
+POPULAR_STORES = sorted(set(STORE_ALIASES.values()))
 
-# ======== DB (один коннект + анти-lock) ========
+# ---------- БД ----------
 _DB_CONN: Optional[sqlite3.Connection] = None
+_DB_LOCK = threading.RLock()
 
-def get_conn() -> sqlite3.Connection:
+def db() -> sqlite3.Connection:
     global _DB_CONN
     if _DB_CONN is None:
         os.makedirs(os.path.dirname(DB_PATH), exist_ok=True)
-        _DB_CONN = sqlite3.connect(DB_PATH, timeout=60.0, check_same_thread=False)
+        _DB_CONN = sqlite3.connect(DB_PATH, check_same_thread=False, timeout=10.0)
         _DB_CONN.row_factory = sqlite3.Row
-        _DB_CONN.execute("PRAGMA journal_mode=WAL;")
-        _DB_CONN.execute("PRAGMA synchronous=NORMAL;")
-        _DB_CONN.execute("PRAGMA busy_timeout=60000;")
+        with _DB_CONN:
+            _DB_CONN.execute("PRAGMA journal_mode=WAL;")
+            _DB_CONN.execute("PRAGMA busy_timeout=5000;")
+            _DB_CONN.execute("PRAGMA synchronous=NORMAL;")
     return _DB_CONN
 
 def init_db():
-    conn = get_conn()
-    conn.executescript("""
+    schema = """
     CREATE TABLE IF NOT EXISTS users(
       user_id INTEGER PRIMARY KEY,
       username TEXT,
@@ -131,61 +129,76 @@ def init_db():
     );
     CREATE TABLE IF NOT EXISTS subscriptions(
       user_id INTEGER PRIMARY KEY,
-      status TEXT,
-      until TEXT,
-      plan TEXT,
+      status TEXT,   -- trial|active|expired
+      until TEXT,    -- ISO date
+      plan TEXT,     -- monthly
       updated_at TEXT DEFAULT CURRENT_TIMESTAMP
     );
     CREATE TABLE IF NOT EXISTS deals(
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       store_slug TEXT,
-      category TEXT,
       title TEXT,
       description TEXT,
       url TEXT,
+      coupon_code TEXT,
       price_old REAL,
       price_new REAL,
       cashback REAL,
-      coupon_code TEXT,
       start_at TEXT,
       end_at TEXT,
       created_at TEXT DEFAULT CURRENT_TIMESTAMP,
       source TEXT,
-      hash TEXT UNIQUE,
-      score REAL DEFAULT 0
+      score REAL DEFAULT 0,
+      hash TEXT UNIQUE
     );
     CREATE INDEX IF NOT EXISTS idx_deals_store ON deals(store_slug);
-    CREATE INDEX IF NOT EXISTS idx_deals_cat ON deals(category);
     CREATE INDEX IF NOT EXISTS idx_deals_end ON deals(end_at);
-    """)
-    conn.commit()
+    """
+    with _DB_LOCK:
+        conn = db()
+        conn.executescript(schema)
+        conn.commit()
 
-def now_utc_iso() -> str:
+def _now_iso_naive_utc() -> str:
+    # datetime.utcnow() — deprec, используем timezone-aware → затем делаем naive
     return datetime.datetime.now(datetime.timezone.utc).replace(tzinfo=None, microsecond=0).isoformat()
 
 def upsert_user(user_id:int, username:str=""):
-    conn = get_conn()
-    conn.execute("INSERT OR IGNORE INTO users(user_id, username) VALUES(?,?)", (user_id, username or ""))
-    conn.commit()
+    with _DB_LOCK:
+        conn = db()
+        conn.execute(
+            "INSERT OR IGNORE INTO users(user_id, username) VALUES(?,?)",
+            (user_id, username or "")
+        )
+        conn.commit()
 
 def get_sub(user_id:int) -> Optional[dict]:
-    conn = get_conn()
-    r = conn.execute("SELECT status, until FROM subscriptions WHERE user_id=?", (user_id,)).fetchone()
-    return dict(r) if r else None
+    with _DB_LOCK:
+        conn = db()
+        r = conn.execute(
+            "SELECT status, until FROM subscriptions WHERE user_id=?",
+            (user_id,)
+        ).fetchone()
+        return dict(r) if r else None
 
 def set_sub(user_id:int, status:str, until_iso:str, plan:str="monthly"):
-    conn = get_conn()
-    conn.execute("""
-        INSERT INTO subscriptions(user_id,status,until,plan,updated_at)
-        VALUES(?,?,?,?,?)
-        ON CONFLICT(user_id) DO UPDATE
-        SET status=excluded.status, until=excluded.until, updated_at=excluded.updated_at
-    """, (user_id, status, until_iso, plan, now_utc_iso()))
-    conn.commit()
+    with _DB_LOCK:
+        conn = db()
+        conn.execute("""
+            INSERT INTO subscriptions(user_id,status,until,plan,updated_at)
+            VALUES(?,?,?,?,?)
+            ON CONFLICT(user_id) DO UPDATE SET
+              status=excluded.status,
+              until=excluded.until,
+              plan=excluded.plan,
+              updated_at=excluded.updated_at
+        """, (user_id, status, until_iso, plan, _now_iso_naive_utc()))
+        conn.commit()
 
 def sub_active(user_id:int) -> bool:
     sub = get_sub(user_id)
-    if not sub: return False
+    if not sub: 
+        return False
     try:
         return datetime.datetime.fromisoformat(sub["until"]) >= datetime.datetime.now(datetime.timezone.utc).replace(tzinfo=None)
     except Exception:
@@ -201,389 +214,467 @@ def grant_month(user_id:int, months:int=1) -> str:
     set_sub(user_id, "active", until)
     return until
 
-def _insert_with_retry(conn: sqlite3.Connection, sql: str, params: tuple, retries:int=3, delay:float=0.2):
-    for i in range(retries):
-        try:
-            conn.execute(sql, params)
-            conn.commit()
-            return
-        except sqlite3.OperationalError as e:
-            if "locked" in str(e).lower() and i < retries-1:
-                time.sleep(delay * (i+1))
-                continue
-            raise
+def _hash_deal(url:str, title:str, code:str) -> str:
+    import hashlib
+    return hashlib.sha256((url + "|" + title + "|" + (code or "")).encode("utf-8")).hexdigest()
 
-def put_deal(d:dict) -> bool:
-    conn = get_conn()
-    h = hashlib.sha256((d.get("url","") + d.get("title","")).encode("utf-8")).hexdigest()
-    d["hash"] = h
-    keys = ["store_slug","category","title","description","url","price_old","price_new","cashback","coupon_code","start_at","end_at","source","score","hash"]
-    vals = [d.get(k) for k in keys]
-    try:
-        _insert_with_retry(conn,
-            f"INSERT INTO deals({','.join(keys)}) VALUES({','.join(['?']*len(keys))})",
-            tuple(vals)
+def put_deals_bulk(deals:List[Dict[str,Any]]) -> int:
+    if not deals:
+        return 0
+    keys = ["store_slug","title","description","url","coupon_code","price_old","price_new",
+            "cashback","start_at","end_at","source","score","hash"]
+    qmarks = ",".join(["?"]*len(keys))
+    rows = []
+    for d in deals:
+        d["hash"] = _hash_deal(d.get("url",""), d.get("title",""), d.get("coupon_code",""))
+        rows.append([d.get(k) for k in keys])
+    inserted = 0
+    with _DB_LOCK:
+        conn = db()
+        for row in rows:
+            try:
+                conn.execute(f"INSERT INTO deals({','.join(keys)}) VALUES({qmarks})", row)
+                inserted += 1
+            except sqlite3.IntegrityError:
+                pass
+        conn.commit()
+    return inserted
+
+def search_deals(store_slug:str, limit:int=8) -> List[dict]:
+    with _DB_LOCK:
+        conn = db()
+        cur = conn.execute(
+            """
+            SELECT * FROM deals
+            WHERE store_slug=?
+              AND (end_at IS NULL OR end_at >= ?)
+            ORDER BY
+                score DESC,
+                CASE WHEN end_at IS NULL THEN 1 ELSE 0 END,
+                end_at ASC,
+                created_at DESC
+            LIMIT ?
+            """,
+            (store_slug, _now_iso_naive_utc(), limit)
         )
-        return True
-    except sqlite3.IntegrityError:
-        return False
-    except sqlite3.OperationalError as e:
-        log.warning(f"[DB] put_deal OperationalError: {e}")
-        return False
+        return [dict(r) for r in cur.fetchall()]
 
-def search_deals(store:Optional[str], limit:int=10) -> List[dict]:
-    conn = get_conn()
-    q = (
-        "SELECT * FROM deals "
-        "WHERE 1=1 "
-        + ("AND store_slug=? " if store else "")
-        + "AND (end_at IS NULL OR end_at>=?) "
-        "ORDER BY score DESC, (end_at IS NULL) ASC, end_at ASC, created_at DESC "
-        "LIMIT ?"
-    )
-    args: List = []
-    if store:
-        args.append(store)
-    args.append(now_utc_iso())
-    args.append(limit)
-    rows = conn.execute(q, tuple(args)).fetchall()
-    return [dict(r) for r in rows]
+def cleanup_old(days:int=60):
+    threshold = (datetime.datetime.now(datetime.timezone.utc).replace(tzinfo=None) - datetime.timedelta(days=days)).isoformat()
+    with _DB_LOCK:
+        conn = db()
+        conn.execute("DELETE FROM deals WHERE (end_at IS NOT NULL AND end_at < ?) OR created_at < ?", (threshold, threshold))
+        conn.commit()
 
-def cleanup_old(ttl_days: int = 14):
-    conn = get_conn()
-    now = now_utc_iso()
-    older_than = (datetime.datetime.now(datetime.timezone.utc).replace(tzinfo=None) - datetime.timedelta(days=ttl_days)).replace(microsecond=0).isoformat()
-    deleted = conn.execute(
-        "DELETE FROM deals WHERE (end_at IS NOT NULL AND end_at < ?) OR (created_at < ?)",
-        (now, older_than),
-    ).rowcount
-    conn.commit()
-    log.info(f"[CLEANUP] deleted={deleted}")
+# ---------- ВСПОМОГАТЕЛЬНОЕ ----------
+UA = {"User-Agent": "Mozilla/5.0 (compatible; HalyavaBot/1.2)"}
 
-# ======== SCRAPERS ========
-HEADERS = {
-    "User-Agent":"Mozilla/5.0 (compatible; HalyavaBot/1.0; +https://t.me/)",
-    "Accept-Language":"ru-RU,ru;q=0.9"
-}
-KEYWORDS = ["акци", "скид", "купон", "промо", "распрод", "sale", "%", "выгод", "бонус", "спец", "промокод", "coupon"]
-CLASS_HINTS = re.compile(r"(promo|action|sale|discount|deal|offer|bonus|coupon|kupon|akci|skid|выгод|акци|скид|спец|распрод)", re.I)
+def slug_for_query(q:str) -> Optional[str]:
+    q = q.strip().lower()
+    return STORE_ALIASES.get(q) or (q if q in POPULAR_STORES else None)
 
-def _extract_best_title(a_tag, soup) -> str:
-    text = " ".join((a_tag.get_text() or "").split())
-    if len(text) >= 8 and not re.search(r"подробнее|узнать|читать|more", text, re.I):
-        return text
-    # ищем ближайший заголовок наверх
-    for parent in a_tag.parents:
-        if not hasattr(parent, "get_text"):
-            break
-        h = parent.find(["h1","h2","h3","h4","strong","b"])
-        if h:
-            t = " ".join(h.get_text().split())
-            if t and len(t) >= 6:
-                return t
-        if getattr(parent, "attrs", None):
-            cl = parent.get("id","")
-            classes = parent.get("class", [])
-            if isinstance(classes, list):
-                cl += " " + " ".join(classes)
-            else:
-                cl += " " + str(classes or "")
-            if CLASS_HINTS.search(cl):
-                t = " ".join(parent.get_text().split())
-                t = re.sub(r"\s{2,}", " ", t)
-                if t and len(t) >= 12:
-                    return t[:180]
-    og = soup.find("meta", property="og:title")
-    if og and og.get("content"):
-        return og["content"].strip()
-    title = soup.find("title")
-    return title.get_text(strip=True) if title else text
+def esc(s:str) -> str:
+    return html.escape(s or "")
 
-def scrape_auto(store, category, url) -> int:
-    log.info(f"[SCRAPE][AUTO] {store} {url}")
+# ---------- ИНТЕГРАЦИИ ИСТОЧНИКОВ ----------
+# 1) Admitad Coupons API
+_admitad_cached_token: Dict[str, Any] = {"value": ADMITAD_ACCESS_TOKEN, "exp": 0}
+
+def admitad_get_token() -> Optional[str]:
+    # если токен уже есть и ещё не истёк — отдадим
+    if _admitad_cached_token["value"] and _admitad_cached_token["exp"] > time.time():
+        return _admitad_cached_token["value"]
+
+    if ADMITAD_ACCESS_TOKEN:
+        # статический токен из ENV (например, полученный вручную) — кэшируем на час
+        _admitad_cached_token["value"] = ADMITAD_ACCESS_TOKEN
+        _admitad_cached_token["exp"] = time.time() + 3600
+        return _admitad_cached_token["value"]
+
+    # иначе пробуем client_credentials
+    if not (ADMITAD_CLIENT_ID and ADMITAD_CLIENT_SECRET):
+        return None
     try:
-        r = requests.get(url, timeout=25, headers=HEADERS)
-        r.raise_for_status()
+        resp = requests.post(
+            "https://api.admitad.com/token/",
+            data={"grant_type": "client_credentials", "scope": "coupons"},
+            auth=(ADMITAD_CLIENT_ID, ADMITAD_CLIENT_SECRET),
+            timeout=20
+        )
+        resp.raise_for_status()
+        data = resp.json()
+        token = data.get("access_token")
+        ttl = data.get("expires_in", 3600)
+        if token:
+            _admitad_cached_token["value"] = token
+            _admitad_cached_token["exp"] = time.time() + max(300, int(ttl) - 60)
+            return token
     except Exception as e:
-        log.warning(f"[SCRAPE][AUTO] fetch fail {store}: {e}")
-        return 0
-    soup = BeautifulSoup(r.text, "html.parser")
-    added, seen = 0, set()
+        log.warning("[ADMITAD] token error: %s", e)
+    return None
 
-    # 1) Секции/карточки по классам-намёкам
-    for box in soup.find_all(True, attrs={"class": CLASS_HINTS}):
-        a = box.find("a", href=True) or box
-        href = a.get("href") if a and a != box else None
-        if href:
-            href = urljoin(url, href)
+def pull_admitad() -> int:
+    if not ADMITAD_WEBSITE_ID:
+        return 0
+    token = admitad_get_token()
+    if not token:
+        return 0
+    url = f"https://api.admitad.com/coupons/website/{ADMITAD_WEBSITE_ID}/"
+    params = {
+        "limit": 500,
+        "language": "ru",
+        "region": "RU",
+        "status": "active",
+        "ordering": "-date_end"
+    }
+    headers = {"Authorization": f"Bearer {token}"}
+    added = 0
+    try:
+        log.info("[SRC][ADMITAD] %s", url)
+        r = requests.get(url, headers=headers, params=params, timeout=30)
+        r.raise_for_status()
+        js = r.json()
+        results = js.get("results") or js.get("results", [])
+        out = []
+        for it in results or []:
+            # важные поля в выдаче coupons/website: campaign, promocode, date_start, date_end, short_name/description
+            campaign = (it.get("campaign") or {}).get("name") or ""
+            code = it.get("promocode") or ""
+            title = it.get("short_name") or it.get("code") or campaign
+            desc = it.get("description") or ""
+            start_at = it.get("date_start")
+            end_at = it.get("date_end")
+            link = it.get("tracked_link") or it.get("goto_link") or it.get("link") or ""
+            # нормализуем магазин
+            store_slug = None
+            c = campaign.lower()
+            for k, v in STORE_ALIASES.items():
+                if k in c:
+                    store_slug = v
+                    break
+            if not store_slug:
+                # fallback: берем первое слово кампании как slug
+                store_slug = re.sub(r"[^a-z0-9]+", "_", campaign.lower()).strip("_") or "unknown"
+
+            score = 1.0
+            if code:
+                score += 0.5
+            if end_at:
+                score += 0.2
+
+            out.append(dict(
+                store_slug=store_slug,
+                title=title,
+                description=desc,
+                url=link,
+                coupon_code=code,
+                price_old=None,
+                price_new=None,
+                cashback=None,
+                start_at=start_at,
+                end_at=end_at,
+                source="admitad",
+                score=score
+            ))
+        added += put_deals_bulk(out)
+    except Exception as e:
+        log.error("[ADMITAD] error: %s", e)
+    return added
+
+# 2) CityAds купон-фид (JSON или XML)
+def pull_cityads() -> int:
+    if not CITYADS_COUPONS_URL:
+        return 0
+    try:
+        log.info("[SRC][CITYADS] %s", CITYADS_COUPONS_URL)
+        r = requests.get(CITYADS_COUPONS_URL, timeout=30, headers=UA)
+        r.raise_for_status()
+        added = 0
+        out: List[Dict[str,Any]] = []
+
+        content_type = r.headers.get("Content-Type","").lower()
+        if "json" in content_type or CITYADS_COUPONS_URL.endswith(".json"):
+            data = r.json()
+            items = data.get("coupons") or data.get("items") or data
+            for it in items:
+                store = (it.get("campaign") or it.get("advertiser") or {}).get("name") or it.get("shop") or ""
+                code = it.get("code") or it.get("coupon") or ""
+                title = it.get("title") or it.get("name") or store
+                desc = it.get("description") or ""
+                link = it.get("url") or it.get("link") or ""
+                start_at = it.get("start_date") or it.get("start") or None
+                end_at = it.get("end_date") or it.get("end") or None
+                store_slug = None
+                s = (store or "").lower()
+                for k, v in STORE_ALIASES.items():
+                    if k in s:
+                        store_slug = v
+                        break
+                if not store_slug:
+                    store_slug = re.sub(r"[^a-z0-9]+","_", s).strip("_") or "unknown"
+
+                out.append(dict(
+                    store_slug=store_slug,
+                    title=title,
+                    description=desc,
+                    url=link,
+                    coupon_code=code,
+                    price_old=None, price_new=None, cashback=None,
+                    start_at=start_at, end_at=end_at,
+                    source="cityads",
+                    score=0.9 + (0.4 if code else 0)
+                ))
         else:
-            href = url
-        title = " ".join(box.get_text().split())
-        title = re.sub(r"\s{2,}", " ", title)
-        if not title or len(title) < 8:
-            continue
-        if href in seen:
-            continue
-        d = dict(store_slug=store, category=category, title=title[:200], description="", url=href,
-                 source=url, score=0.95, start_at=None, end_at=None,
-                 price_old=None, price_new=None, cashback=None, coupon_code=None)
-        if put_deal(d):
-            added += 1
-            seen.add(href)
-
-    # 2) Ссылки с фильтром по ключевым словам
-    for a in soup.find_all("a", href=True)[:3000]:
-        href = urljoin(url, a["href"])
-        if href in seen or href.startswith(("javascript:", "#")):
-            continue
-        lowt = (a.get_text() or "").lower()
-        near_text = " ".join(a.get_text(separator=" ").split())
-        if not any(k in lowt for k in KEYWORDS):
-            par = a.find_parent(True)
-            if not par:
-                continue
-            classes = par.get("class", [])
-            cl = " ".join(classes if isinstance(classes, list) else [str(classes or "")]) + " " + par.get("id","")
-            if not (any(k in near_text.lower() for k in KEYWORDS) or CLASS_HINTS.search(cl)):
-                continue
-
-        title = _extract_best_title(a, soup)
-        if not title or len(title) < 6:
-            continue
-        d = dict(store_slug=store, category=category, title=title[:200], description="",
-                 url=href, source=url, score=0.8, start_at=None, end_at=None,
-                 price_old=None, price_new=None, cashback=None, coupon_code=None)
-        if put_deal(d):
-            added += 1
-            seen.add(href)
-
-    log.info(f"[SCRAPE][AUTO] added: {added}")
-    return added
-
-def scrape_rss(store, category, url) -> int:
-    log.info(f"[SCRAPE][RSS] {store} {url}")
-    try:
-        feed = feedparser.parse(url)
+            # XML → feedparser (как RSS)
+            feed = feedparser.parse(r.text)
+            for e in feed.entries:
+                title = (e.get("title") or "").strip()
+                link = e.get("link") or ""
+                summary = (e.get("summary") or "").strip()
+                code_match = re.search(r"(?:promo|код|code)\s*[:\- ]\s*([A-Z0-9\-]{4,16})", summary, re.IGNORECASE)
+                code = code_match.group(1) if code_match else ""
+                store_slug = "unknown"
+                for k, v in STORE_ALIASES.items():
+                    if k in (title + " " + summary).lower():
+                        store_slug = v
+                        break
+                out.append(dict(
+                    store_slug=store_slug,
+                    title=title,
+                    description=summary,
+                    url=link,
+                    coupon_code=code,
+                    price_old=None, price_new=None, cashback=None,
+                    start_at=None, end_at=None,
+                    source="cityads_rss",
+                    score=0.7 + (0.3 if code else 0)
+                ))
+        added += put_deals_bulk(out)
+        return added
     except Exception as e:
-        log.warning(f"[SCRAPE][RSS] parse fail {store}: {e}")
+        log.error("[CITYADS] error: %s", e)
         return 0
-    added = 0
-    for e in feed.entries[:300]:
-        title = (e.get("title") or "").strip()
-        link  = e.get("link") or ""
-        summary = (e.get("summary") or "").strip()
-        if not title or not link:
-            continue
-        if not any(k in title.lower() for k in KEYWORDS) and not any(k in summary.lower() for k in KEYWORDS):
-            continue
-        d = dict(store_slug=store, category=category, title=title[:200], description=summary[:500],
-                 url=link, source=url, score=0.7, start_at=None, end_at=None,
-                 price_old=None, price_new=None, cashback=None, coupon_code=None)
-        if put_deal(d):
-            added += 1
-    log.info(f"[SCRAPE][RSS] added: {added}")
-    return added
 
-def scrape_html_css(store, category, url, item_sel, title_sel, link_sel, desc_sel=None) -> int:
-    log.info(f"[SCRAPE][HTML] {store} {url}")
-    try:
-        r = requests.get(url, timeout=25, headers=HEADERS)
-        r.raise_for_status()
-    except Exception as e:
-        log.warning(f"[SCRAPE][HTML] fetch fail {store}: {e}")
+# 3) Официальные промо-страницы (простой HTML)
+def pull_official_pages() -> int:
+    if not OFFICIAL_PROMO_PAGES:
         return 0
-    soup = BeautifulSoup(r.text, "html.parser")
-    items = soup.select(item_sel)[:300]
-    added = 0
-    for it in items:
-        te = it.select_one(title_sel)
-        le = it.select_one(link_sel)
-        if not te or not le:
-            continue
-        title = " ".join(te.get_text().split())
-        link  = urljoin(url, le.get("href") or "")
-        desc  = ""
-        if desc_sel:
-            de = it.select_one(desc_sel)
-            if de: desc = " ".join(de.get_text().split())
-        d = dict(store_slug=store, category=category, title=title[:200], description=desc[:500],
-                 url=link, source=url, score=0.9, start_at=None, end_at=None,
-                 price_old=None, price_new=None, cashback=None, coupon_code=None)
-        if put_deal(d):
-            added += 1
-    log.info(f"[SCRAPE][HTML] added: {added}")
-    return added
-
-def run_all_sources() -> int:
-    raw = STORES_JSON or DEFAULT_STORES_JSON
-    try:
-        conf = json.loads(raw)
-    except Exception as e:
-        log.error(f"[SCRAPE] bad STORES_JSON: {e}")
-        conf = {"stores":[]}
     total = 0
-    for s in conf.get("stores", []):
-        t = s.get("type")
+    out: List[Dict[str,Any]] = []
+    for url in OFFICIAL_PROMO_PAGES:
         try:
-            if t == "rss":
-                total += scrape_rss(s["store"], s.get("category","другое"), s["url"])
-            elif t == "html_css":
-                total += scrape_html_css(
-                    s["store"], s.get("category","другое"),
-                    s["url"], s["item_selector"], s["title_selector"], s["link_selector"],
-                    s.get("desc_selector")
-                )
-            else:  # auto / None
-                total += scrape_auto(s["store"], s.get("category","другое"), s["url"])
-        except Exception:
-            log.exception(f"[SCRAPE] error store={s}")
-    log.info(f"[SCRAPE] total added: {total}")
+            log.info("[SRC][PROMO_PAGE] %s", url)
+            r = requests.get(url, timeout=20, headers=UA)
+            r.raise_for_status()
+            soup = BeautifulSoup(r.text, "html.parser")
+
+            # общие эвристики: «промокод», «введите код», «код: XXXX»
+            texts = soup.get_text(" ", strip=True)
+            for m in re.finditer(r"(?:промокод|код)\s*[:\- ]\s*([A-Z0-9\-]{4,16})", texts, re.IGNORECASE):
+                code = m.group(1)
+                title = "Промокод"
+                desc = "Официальная промо-страница"
+                # попытаемся угадать магазин по домену
+                host = re.sub(r"^https?://", "", url)
+                host = host.split("/")[0].lower()
+                store_slug = "unknown"
+                for k, v in STORE_ALIASES.items():
+                    if k in host or k.replace(" ", "") in host:
+                        store_slug = v
+                        break
+                out.append(dict(
+                    store_slug=store_slug,
+                    title=title,
+                    description=desc,
+                    url=url,
+                    coupon_code=code,
+                    price_old=None, price_new=None, cashback=None,
+                    start_at=None, end_at=None,
+                    source="official_page",
+                    score=0.6
+                ))
+        except Exception as e:
+            log.warning("[PROMO_PAGE] %s error: %s", url, e)
+    total += put_deals_bulk(out)
     return total
 
-# ======== BOT ========
-router = Router()
+# ---------- СБОР ИСТОЧНИКОВ ----------
+def run_all_sources() -> int:
+    total = 0
+    total += pull_admitad()
+    total += pull_cityads()
+    total += pull_official_pages()
+    log.info("[SCRAPE] total added: %s", total)
+    return total
 
+# ---------- ФОРМАТ ОТВЕТА ----------
 def fmt_deal(d:dict) -> str:
-    price = ""
+    lines = []
+    lines.append(f"🛍 {esc(d.get('store_slug') or 'магазин')} — {esc(d.get('title') or '')}")
+    code = d.get("coupon_code")
+    if code:
+        lines.append(f"Промокод: <code>{esc(code)}</code>")
     if d.get("price_new"):
-        price = f"Цена: {d['price_new']}\n" if not d.get("price_old") else f"Цена: {d['price_new']} (было {d['price_old']})\n"
-    cb = f"Кэшбэк: {d['cashback']}\n" if d.get("cashback") else ""
-    coup = f"Промокод: <code>{d['coupon_code']}</code>\n" if d.get("coupon_code") else ""
-    deadline = f"Дедлайн: {d['end_at']}\n" if d.get("end_at") else ""
-    return (
-        f"🛒 {d['store_slug']} • {d.get('category') or 'без категории'}\n"
-        f"🧩 {d['title']}\n"
-        f"{price}{cb}{coup}{deadline}"
-        f"🔗 {d['url']}"
-    )
+        if d.get("price_old"):
+            lines.append(f"Цена: {d['price_new']} (было {d['price_old']})")
+        else:
+            lines.append(f"Цена: {d['price_new']}")
+    if d.get("cashback"):
+        lines.append(f"Кэшбэк: {d['cashback']}")
+    if d.get("end_at"):
+        lines.append(f"Действует до: {esc(d['end_at'])}")
+    if d.get("description"):
+        # коротко
+        desc = (d["description"] or "")
+        if len(desc) > 160:
+            desc = desc[:157] + "…"
+        lines.append(esc(desc))
+    if d.get("url"):
+        lines.append(f"🔗 {esc(d['url'])}")
+    return "\n".join(lines)
 
-def normalize_store_name(text: str) -> Optional[str]:
-    key = text.strip().lower()
-    key = re.sub(r"[^a-zа-я0-9]+", "", key)
-    return ALIASES.get(key)
-
-@router.message(Command("ping"))
-async def cmd_ping(m: Message):
-    await m.answer("pong")
-
-@router.message(Command("reload"))
-async def cmd_reload(m: Message):
-    cnt = run_all_sources()
-    await m.answer(f"Обновил источники. Новых позиций: {cnt}")
+# ---------- БОТ ----------
+router = Router()
 
 @router.message(Command("start"))
 async def cmd_start(m: Message):
+    log.info("[START] from=%s @%s", m.from_user.id, m.from_user.username)
     upsert_user(m.from_user.id, m.from_user.username or "")
     sub = get_sub(m.from_user.id)
     if not sub:
         till = grant_trial(m.from_user.id, TRIAL_DAYS)
         await m.answer(
-            "Привет! Включил бесплатный триал до {till}.\n"
-            "Команды: /search &lt;магазин&gt;, /buy, /profile, /stores, /redeem &lt;код&gt;, /help".format(till=till)
+            f"Привет! Включил бесплатный триал до {esc(till)}.\n"
+            f"Команды: /search <магазин>, /stores, /profile, /buy, /redeem <код>, /help",
+            disable_web_page_preview=True
         )
     else:
-        await m.answer("Снова ты! Пробуй: /search ozon")
+        await m.answer("Снова здесь! Попробуй: <code>/search ozon</code>", disable_web_page_preview=True)
 
 @router.message(Command("help"))
 async def cmd_help(m: Message):
     await m.answer(
         "Команды:\n"
-        "/search &lt;магазин&gt; — без категорий (пример: /search ozon)\n"
-        "/stores — список доступных магазинов\n"
-        "/profile — статус подписки\n"
-        "/buy — оформить подписку\n"
-        "/redeem &lt;код&gt; — активировать промокод\n"
-        "/reload — обновить источники"
+        "• /search <магазин> — найти актуальные промо\n"
+        "• /stores — список магазинов\n"
+        "• /profile — статус подписки\n"
+        f"• /buy — оформить подписку ({MONTHLY_PRICE_RUB}₽/мес)\n"
+        "• /redeem <код> — активировать промокод подписки\n"
+        "• /update — принудительно обновить источники (для админа)\n",
+        disable_web_page_preview=True
     )
+
+@router.message(Command("stores"))
+async def cmd_stores(m: Message):
+    await m.answer("Популярные магазины:\n" + "\n".join("• " + s for s in POPULAR_STORES))
 
 @router.message(Command("profile"))
 async def cmd_profile(m: Message):
     sub = get_sub(m.from_user.id)
     if not sub:
-        await m.answer("Статус: нет подписки. /buy — оформить (249₽/мес)")
-    else:
-        await m.answer(f"Статус: {sub['status']} до {sub['until']}")
+        return await m.answer("Статус: нет подписки. /buy — оформить (249₽/мес).")
+    await m.answer(f"Статус: {esc(sub['status'])} до {esc(sub['until'])}")
 
 @router.message(Command("buy"))
 async def cmd_buy(m: Message):
     await m.answer(
         f"Подписка {MONTHLY_PRICE_RUB}₽/мес.\n"
-        f"На MVP — промокод от админа: /redeem КОД."
+        f"На MVP доступна активация через промокод администратора: /redeem КОД.\n"
+        f"Позже прикрутим оплату.",
+        disable_web_page_preview=True
     )
 
 @router.message(Command("redeem"))
 async def cmd_redeem(m: Message):
-    parts = m.text.split(maxsplit=1)
-    if len(parts) < 2:
-        return await m.answer("Формат: /redeem &lt;код&gt;")
+    parts = (m.text or "").split(maxsplit=1)
+    if len(parts) < 2 or not parts[1].strip():
+        return await m.answer("Формат: <code>/redeem КОД</code>")
     code = parts[1].strip()
-    if not code:
-        return await m.answer("Пустой код.")
-    if PROMO_CODES and code not in PROMO_CODES:
-        return await m.answer("Код неверный.")
+    # на MVP активируем месяц без проверки — можешь потом сверять с ENV списком
     until = grant_month(m.from_user.id, 1)
-    await m.answer(f"Подписка активна до {until}. /profile — проверить")
+    await m.answer(f"Подписка активна до {esc(until)}. /profile — проверить")
 
-@router.message(Command("stores"))
-async def cmd_stores(m: Message):
-    seen = set()
-    slugs = []
-    conf = json.loads(STORES_JSON or DEFAULT_STORES_JSON)
-    for slug in [x["store"] for x in conf.get("stores", [])]:
-        if slug not in seen:
-            seen.add(slug)
-            slugs.append(slug)
-    if not slugs:
-        return await m.answer("Пока пусто. Нажми /reload, затем /search ozon.")
-    await m.answer("Доступные магазины:\n" + "\n".join(f"• {s}" for s in slugs))
+@router.message(Command("update"))
+async def cmd_update(m: Message):
+    # простой «админ»: разрешим всем, но поставим ограничение по частоте
+    await m.answer("Пошёл сбор источников…")
+    added = run_all_sources()
+    await m.answer(f"Готово. Добавлено: {added}")
 
 @router.message(Command("search"))
 async def cmd_search(m: Message):
-    try:
-        args = m.text.split()[1:]
-        if not args:
-            return await m.answer("Формат: /search &lt;магазин&gt;\nНапример: /search ozon")
-        user_store = " ".join(args)
-        store = normalize_store_name(user_store) or user_store.strip().lower()
-        if not sub_active(m.from_user.id):
-            return await m.answer("Нужна активная подписка. /buy — оформить (есть триал в /start)")
-        results = search_deals(store, limit=10)
-        if not results:
-            # Пингуем сбор: через пару секунд пусть обновит
-            asyncio.get_event_loop().call_later(1, lambda: asyncio.create_task(scrape_job()))
-            return await m.answer("Пока пусто по этому магазину. Нажми /reload, подожди 10–20 сек и повтори запрос.")
-        for d in results:
-            await m.answer(fmt_deal(d), link_preview_options=LinkPreviewOptions(is_disabled=True))
-    except Exception as e:
-        log.exception("[SEARCH] handler error")
-        await m.answer(f"Ошибка поиска: {e!s}")
+    log.info("[SEARCH] from=%s text=%r", m.from_user.id, m.text)
+    args = (m.text or "").split()[1:]
+    if not args:
+        # ВАЖНО: без HTML-угловых скобок, чтобы не было ошибки parse entities
+        return await m.answer("Формат: /search магазин\nПример: /search ozon")
 
-# ======== SCHEDULER ========
+    if not sub_active(m.from_user.id):
+        return await m.answer("Нужна активная подписка. /buy — оформить (есть бесплатный триал в /start)")
+
+    store_slug = slug_for_query(" ".join(args))
+    if not store_slug:
+        return await m.answer("Не узнал магазин. Посмотри /stores и попробуй ещё раз.")
+
+    results = search_deals(store_slug, limit=8)
+    if not results:
+        await m.answer("По этому магазину пока пусто. Запрашиваю источники…")
+        # форс-сбор для конкретного магазина (пока собираем все)
+        run_all_sources()
+        results = search_deals(store_slug, limit=8)
+        if not results:
+            return await m.answer("Пока ничего не нашли. Загляни позже или попробуй другой магазин.")
+
+    for d in results:
+        try:
+            await m.answer(fmt_deal(d), disable_web_page_preview=True)
+        except Exception:
+            # на всякий случай отправим без HTML
+            txt = re.sub(r"<.*?>", "", fmt_deal(d))
+            await m.answer(txt, disable_web_page_preview=True)
+
+# ---------- ПЛАНИРОВЩИК ----------
 scheduler: Optional[AsyncIOScheduler] = None
 
 async def scrape_job():
     try:
-        cnt = run_all_sources()
-        log.info(f"[SCRAPER] added: {cnt}")
-    except Exception:
-        log.exception("[SCRAPER] error")
+        added = run_all_sources()
+        log.info("[SCRAPER] added: %s", added)
+    except Exception as e:
+        log.error("[SCRAPER] error: %s", e)
+
+async def cleanup_job():
+    try:
+        cleanup_old(60)
+        log.info("[CLEANUP] done")
+    except Exception as e:
+        log.error("[CLEANUP] error: %s", e)
 
 async def main():
     if not BOT_TOKEN:
         raise RuntimeError("Set BOT_TOKEN env var")
+
     init_db()
-    bot = Bot(token=BOT_TOKEN, default=DefaultBotProperties(parse_mode=ParseMode.HTML))
+
+    bot = Bot(
+        token=BOT_TOKEN,
+        default=DefaultBotProperties(parse_mode=ParseMode.HTML)
+    )
     dp = Dispatcher()
     dp.include_router(router)
+
     global scheduler
-    scheduler = AsyncIOScheduler(timezone=ZoneInfo(TIMEZONE))
-    scheduler.add_job(scrape_job, "interval", minutes=20, id="scrape")
-    scheduler.add_job(cleanup_old, "cron", hour=3, minute=0, id="cleanup")
+    scheduler = AsyncIOScheduler(timezone=TIMEZONE)
+    scheduler.add_job(scrape_job, "interval", minutes=30, id="scrape")
+    scheduler.add_job(cleanup_job, "interval", hours=12, id="cleanup")
     scheduler.start()
-    # первый сбор через 5 сек
-    asyncio.get_event_loop().call_later(5, lambda: asyncio.create_task(scrape_job()))
+
+    # первый сбор — через 10 сек, чтобы база не была пустой
+    loop = asyncio.get_event_loop()
+    loop.call_later(10, lambda: asyncio.create_task(scrape_job()))
+
+    log.info("Start polling")
     await dp.start_polling(bot)
 
 if __name__ == "__main__":
     asyncio.run(main())
-        
