@@ -481,7 +481,7 @@ async def cmd_start(m: Message):
     else:
         await m.answer("Снова здесь! Попробуй: /search ozon", disable_web_page_preview=True)
 
-@router.message(Command("help")))
+@router.message(Command("help"))
 async def cmd_help(m: Message):
     await m.answer(
         "Команды:\n"
