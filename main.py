@@ -7,7 +7,9 @@ from bs4 import BeautifulSoup
 import feedparser
 from aiogram.client.default import DefaultBotProperties
 from aiogram.enums import ParseMode
-from aiogram import Bot, Dispatcher, import, F
+from aiogram import Bot, Dispatcher, Router, F
+from aiogram.client.default import DefaultBotProperties
+from aiogram.enums import ParseMode
 from aiogram.filters import Command
 from aiogram.types import Message
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
@@ -59,8 +61,8 @@ def init_db():
       status TEXT,   -- trial|active|expired
       until TEXT,    -- ISO date
       plan TEXT,     -- monthly
-      updated_at TEXT DEFAULT CURRENT_TIt =TAMP
-    );
+      updated_at TEXT DEFAULT CURRENT_TIMESTAMP
+      );
     CREATE TABLE IF NOT EXISTS deals(
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       store_slug TEXT,
@@ -149,7 +151,7 @@ def search_deals(store:Optional[str], category:Optional[str], limit:int=5) -> Li
         args.extend([category, f"%{category}%", f"%{category}%"])
     q += " AND (end_at IS NULL OR end_at>=?)"
     args.append(now_iso())
-    q += " ORDER BY score DESC, end_at ASC NULLS LAST, created_at DESC LIMIT ?"
+    q += " ORDER BY score DESC, (end_at IS NULL) ASC, end_at ASC, created_at DESC LIMIT ?"
     args.append(limit)
     cur = conn.execute(q, tuple(args))
     return [dict(r) for r in cur.fetchall()]
