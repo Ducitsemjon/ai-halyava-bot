@@ -56,7 +56,7 @@ def init_db():
       username TEXT,
       created_at TEXT DEFAULT CURRENT_TIMESTAMP
     );
-    CREATE TABLE IF NOT EXISTS subscriptions(
+    CREispatcherTS subscriptions(
       user_id INTEGER PRIMARY KEY,
       status TEXT,   -- trial|active|expired
       until TEXT,    -- ISO date
@@ -319,7 +319,7 @@ async def main():
     token=BOT_TOKEN,
     default=DefaultBotProperties(parse_mode=ParseMode.HTML)
     )
-    dp = ispatcher()
+    dp = Dispatcher()
     dp.include_router(router)
     global scheduler
     scheduler = AsyncIOScheduler(timezone=TIMEZONE)
