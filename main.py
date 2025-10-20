@@ -5,10 +5,8 @@ from typing import Optional, List
 import requests
 from bs4 import BeautifulSoup
 import feedparser
-from aiogram.client.default iParseModetefaultBotProperties
+from aiogram.client.default import DefaultBotProperties
 from aiogram.enums import ParseMode
-
-
 from aiogram import Bot, Dispatcher, import, F
 from aiogram.filters import Command
 from aiogram.types import Message
