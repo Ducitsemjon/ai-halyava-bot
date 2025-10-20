@@ -27,50 +27,43 @@ MONTHLY_PRICE_RUB = int(os.environ.get("MONTHLY_PRICE_RUB", "249"))
 DB_PATH = os.environ.get("DB_PATH", "/data/halyava.db")
 TIMEZONE = os.environ.get("TIMEZONE", "Europe/Moscow")
 
-# Если в ENV нет STORES_JSON — используем большой дефолт ниже
+# Если в ENV нет STORES_JSON — используем дефолт ниже (валидный JSON без комментариев)
 STORES_JSON = os.environ.get("STORES_JSON")
 
 DEFAULT_STORES_JSON = """
 {
   "stores": [
-    /* ===== Маркетплейсы ===== */
-    { "type":"auto", "store":"ozon",           "category":"акции", "url":"https://www.ozon.ru/info/actions/" },
-    { "type":"auto", "store":"wb",             "category":"акции", "url":"https://www.wildberries.ru/promotions" },
-    { "type":"auto", "store":"yandexmarket",   "category":"акции", "url":"https://market.yandex.ru/specials" },
-    { "type":"auto", "store":"sbermegamarket", "category":"акции", "url":"https://sbermegamarket.ru/actions/" },
+    { "type":"auto","store":"ozon","category":"акции","url":"https://www.ozon.ru/info/actions/" },
+    { "type":"auto","store":"wb","category":"акции","url":"https://www.wildberries.ru/promotions" },
+    { "type":"auto","store":"yandexmarket","category":"акции","url":"https://market.yandex.ru/specials" },
+    { "type":"auto","store":"sbermegamarket","category":"акции","url":"https://sbermegamarket.ru/actions/" },
 
-    /* ===== Электроника ===== */
-    { "type":"auto", "store":"mvideo",   "category":"акции", "url":"https://www.mvideo.ru/promo" },
-    { "type":"auto", "store":"eldorado", "category":"акции", "url":"https://www.eldorado.ru/promo/" },
-    { "type":"auto", "store":"dns",      "category":"акции", "url":"https://www.dns-shop.ru/actions/" },
-    { "type":"auto", "store":"citilink", "category":"акции", "url":"https://www.citilink.ru/promo/" },
-    { "type":"auto", "store":"technopark","category":"акции", "url":"https://www.technopark.ru/promo/" },
+    { "type":"auto","store":"mvideo","category":"акции","url":"https://www.mvideo.ru/promo" },
+    { "type":"auto","store":"eldorado","category":"акции","url":"https://www.eldorado.ru/promo/" },
+    { "type":"auto","store":"dns","category":"акции","url":"https://www.dns-shop.ru/actions/" },
+    { "type":"auto","store":"citilink","category":"акции","url":"https://www.citilink.ru/promo/" },
+    { "type":"auto","store":"technopark","category":"акции","url":"https://www.technopark.ru/promo/" },
 
-    /* ===== Одежда/обувь/спорт ===== */
-    { "type":"auto", "store":"lamoda",      "category":"акции", "url":"https://www.lamoda.ru/promo/" },
-    { "type":"auto", "store":"sportmaster","category":"акции", "url":"https://www.sportmaster.ru/actions/" },
+    { "type":"auto","store":"lamoda","category":"акции","url":"https://www.lamoda.ru/promo/" },
+    { "type":"auto","store":"sportmaster","category":"акции","url":"https://www.sportmaster.ru/actions/" },
 
-    /* ===== Красота ===== */
-    { "type":"auto", "store":"letual",      "category":"акции", "url":"https://www.letu.ru/promo" },
-    { "type":"auto", "store":"rivegauche",  "category":"акции", "url":"https://www.rivegauche.ru/promo" },
+    { "type":"auto","store":"letual","category":"акции","url":"https://www.letu.ru/promo" },
+    { "type":"auto","store":"rivegauche","category":"акции","url":"https://www.rivegauche.ru/promo" },
 
-    /* ===== Аптеки ===== */
-    { "type":"auto", "store":"apteka",    "category":"акции", "url":"https://apteka.ru/discounts" },
-    { "type":"auto", "store":"rigla",     "category":"акции", "url":"https://www.rigla.ru/actions/" },
-    { "type":"auto", "store":"aptekamos", "category":"акции", "url":"https://www.apteka-mos.ru/actions/" },
+    { "type":"auto","store":"apteka","category":"акции","url":"https://apteka.ru/discounts" },
+    { "type":"auto","store":"rigla","category":"акции","url":"https://www.rigla.ru/actions/" },
+    { "type":"auto","store":"aptekamos","category":"акции","url":"https://www.apteka-mos.ru/actions/" },
 
-    /* ===== Продукты/сети ===== */
-    { "type":"auto", "store":"vkusvill",     "category":"акции", "url":"https://vkusvill.ru/akcii/" },
-    { "type":"auto", "store":"perekrestok",  "category":"акции", "url":"https://www.perekrestok.ru/cat/akcii" },
-    { "type":"auto", "store":"magnit",       "category":"акции", "url":"https://magnit.ru/promo/" },
-    { "type":"auto", "store":"lenta",        "category":"акции", "url":"https://lenta.com/promo/" },
-    { "type":"auto", "store":"auchan",       "category":"акции", "url":"https://www.auchan.ru/promo/" },
-    { "type":"auto", "store":"okey",         "category":"акции", "url":"https://www.okmarket.ru/actions/" },
-    { "type":"auto", "store":"metro",        "category":"акции", "url":"https://www.metro-cc.ru/promo" },
-    { "type":"auto", "store":"sbermarket",   "category":"акции", "url":"https://sbermarket.ru/actions" },
+    { "type":"auto","store":"vkusvill","category":"акции","url":"https://vkusvill.ru/akcii/" },
+    { "type":"auto","store":"perekrestok","category":"акции","url":"https://www.perekrestok.ru/cat/akcii" },
+    { "type":"auto","store":"magnit","category":"акции","url":"https://magnit.ru/promo/" },
+    { "type":"auto","store":"lenta","category":"акции","url":"https://lenta.com/promo/" },
+    { "type":"auto","store":"auchan","category":"акции","url":"https://www.auchan.ru/promo/" },
+    { "type":"auto","store":"okey","category":"акции","url":"https://www.okmarket.ru/actions/" },
+    { "type":"auto","store":"metro","category":"акции","url":"https://www.metro-cc.ru/promo" },
+    { "type":"auto","store":"sbermarket","category":"акции","url":"https://sbermarket.ru/actions" },
 
-    /* ===== Доставка еды/сервисы (если страница открытая) ===== */
-    { "type":"auto", "store":"deliveryclub", "category":"акции", "url":"https://delivery-club.ru/special" }
+    { "type":"auto","store":"deliveryclub","category":"акции","url":"https://delivery-club.ru/special" }
   ]
 }
 """
@@ -80,17 +73,10 @@ PROMO_CODES = {c.strip() for c in os.environ.get("PROMO_CODES", "").split(",") i
 
 # ======== DB LAYER ========
 def connect() -> sqlite3.Connection:
-    """Создаём новое соединение с безопасными PRAGMA и таймаутом.
-       ВАЖНО: используем контекстный менеджер `with connect() as conn:` и быстро закрываем соединение,
-       чтобы не держать блокировки файла."""
+    """Новое соединение с безопасными PRAGMA и таймаутом. Используй: with connect() as conn: ..."""
     os.makedirs(os.path.dirname(DB_PATH), exist_ok=True)
-    conn = sqlite3.connect(
-        DB_PATH,
-        timeout=60.0,               # ждём до 60 сек, если кто-то держит запись
-        check_same_thread=False     # работаем из корутин в одном процессе
-    )
+    conn = sqlite3.connect(DB_PATH, timeout=60.0, check_same_thread=False)
     conn.row_factory = sqlite3.Row
-    # ускоряем и включаем множественные читатели / один писатель
     conn.execute("PRAGMA journal_mode=WAL;")
     conn.execute("PRAGMA synchronous=NORMAL;")
     conn.execute("PRAGMA busy_timeout=60000;")
@@ -107,9 +93,9 @@ def init_db():
 
         CREATE TABLE IF NOT EXISTS subscriptions(
           user_id INTEGER PRIMARY KEY,
-          status TEXT,   -- trial|active|expired
-          until TEXT,    -- ISO date
-          plan TEXT,     -- monthly
+          status TEXT,
+          until TEXT,
+          plan TEXT,
           updated_at TEXT DEFAULT CURRENT_TIMESTAMP
         );
 
@@ -138,22 +124,15 @@ def init_db():
         """)
 
 def now_utc_iso() -> str:
-    # Делаем naive ISO в UTC (без таймзоны), чтобы строковые сравнения в SQLite были корректны
     return datetime.datetime.now(datetime.timezone.utc).replace(tzinfo=None, microsecond=0).isoformat()
 
 def upsert_user(user_id:int, username:str=""):
     with connect() as conn:
-        conn.execute(
-            "INSERT OR IGNORE INTO users(user_id, username) VALUES(?,?)",
-            (user_id, username or "")
-        )
+        conn.execute("INSERT OR IGNORE INTO users(user_id, username) VALUES(?,?)", (user_id, username or ""))
 
 def get_sub(user_id:int) -> Optional[dict]:
     with connect() as conn:
-        r = conn.execute(
-            "SELECT status, until FROM subscriptions WHERE user_id=?",
-            (user_id,)
-        ).fetchone()
+        r = conn.execute("SELECT status, until FROM subscriptions WHERE user_id=?", (user_id,)).fetchone()
     return dict(r) if r else None
 
 def set_sub(user_id:int, status:str, until_iso:str, plan:str="monthly"):
@@ -167,23 +146,19 @@ def set_sub(user_id:int, status:str, until_iso:str, plan:str="monthly"):
 
 def sub_active(user_id:int) -> bool:
     sub = get_sub(user_id)
-    if not sub:
-        return False
+    if not sub: return False
     try:
-        return datetime.datetime.fromisoformat(sub["until"]) >= \
-               datetime.datetime.now(datetime.timezone.utc).replace(tzinfo=None)
+        return datetime.datetime.fromisoformat(sub["until"]) >= datetime.datetime.now(datetime.timezone.utc).replace(tzinfo=None)
     except Exception:
         return False
 
 def grant_trial(user_id:int, days:int=TRIAL_DAYS) -> str:
-    until = (datetime.datetime.now(datetime.timezone.utc).replace(tzinfo=None)
-             + datetime.timedelta(days=days)).replace(microsecond=0).isoformat()
+    until = (datetime.datetime.now(datetime.timezone.utc).replace(tzinfo=None) + datetime.timedelta(days=days)).replace(microsecond=0).isoformat()
     set_sub(user_id, "trial", until)
     return until
 
 def grant_month(user_id:int, months:int=1) -> str:
-    until = (datetime.datetime.now(datetime.timezone.utc).replace(tzinfo=None)
-             + datetime.timedelta(days=30*months)).replace(microsecond=0).isoformat()
+    until = (datetime.datetime.now(datetime.timezone.utc).replace(tzinfo=None) + datetime.timedelta(days=30*months)).replace(microsecond=0).isoformat()
     set_sub(user_id, "active", until)
     return until
 
@@ -194,10 +169,7 @@ def put_deal(d:dict) -> bool:
     vals = [d.get(k) for k in keys]
     try:
         with connect() as conn:
-            conn.execute(
-                f"INSERT INTO deals({','.join(keys)}) VALUES({','.join(['?']*len(keys))})",
-                vals
-            )
+            conn.execute(f"INSERT INTO deals({','.join(keys)}) VALUES({','.join(['?']*len(keys))})", vals)
         return True
     except sqlite3.IntegrityError:
         return False
@@ -213,25 +185,20 @@ def search_deals(store:Optional[str], category:Optional[str], limit:int=5) -> Li
         args.extend([category, f"%{category}%", f"%{category}%"])
     q += " AND (end_at IS NULL OR end_at>=?)"
     args.append(now_utc_iso())
-    # SQLite без NULLS LAST:
     q += " ORDER BY score DESC, (end_at IS NULL) ASC, end_at ASC, created_at DESC LIMIT ?"
     args.append(limit)
     with connect() as conn:
-        cur = conn.execute(q, tuple(args))
-        rows = cur.fetchall()
+        rows = conn.execute(q, tuple(args)).fetchall()
     return [dict(r) for r in rows]
 
 def cleanup_old(ttl_days: int = 14):
-    """Удаляем устаревшие сделки: просроченные по end_at или старше TTL по created_at."""
     now = now_utc_iso()
-    older_than = (datetime.datetime.now(datetime.timezone.utc).replace(tzinfo=None)
-                  - datetime.timedelta(days=ttl_days)).replace(microsecond=0).isoformat()
+    older_than = (datetime.datetime.now(datetime.timezone.utc).replace(tzinfo=None) - datetime.timedelta(days=ttl_days)).replace(microsecond=0).isoformat()
     with connect() as conn:
-        cur = conn.execute(
+        deleted = conn.execute(
             "DELETE FROM deals WHERE (end_at IS NOT NULL AND end_at < ?) OR (created_at < ?)",
             (now, older_than),
-        )
-        deleted = cur.rowcount
+        ).rowcount
     log.info(f"[CLEANUP] deleted={deleted}")
 
 # ======== SCRAPERS ========
@@ -241,40 +208,25 @@ KEYWORDS = ["акци", "скид", "купон", "промо", "распрод"
 def scrape_auto(store, category, url) -> int:
     log.info(f"[SCRAPE][AUTO] {store} {url}")
     try:
-        r = requests.get(url, timeout=20, headers=HEADERS)
-        r.raise_for_status()
+        r = requests.get(url, timeout=20, headers=HEADERS); r.raise_for_status()
     except Exception as e:
-        log.warning(f"[SCRAPE][AUTO] fetch fail {store}: {e}")
-        return 0
+        log.warning(f"[SCRAPE][AUTO] fetch fail {store}: {e}"); return 0
     soup = BeautifulSoup(r.text, "html.parser")
     anchors = soup.find_all("a", href=True)
-    added = 0
-    seen = set()
-
+    added, seen = 0, set()
     for a in anchors[:2000]:
         text = " ".join((a.get_text() or "").split())
         href = urljoin(url, a["href"])
-        if not text or href in seen:
-            continue
-        if href.startswith("javascript:") or href.startswith("#"):
-            continue
+        if not text or href in seen: continue
+        if href.startswith("javascript:") or href.startswith("#"): continue
         low = text.lower()
-        if not any(k in low for k in KEYWORDS):
-            continue
-        # фильтр лишних ссылок
-        if re.search(r"(login|signin|account|lk|cart|support|faq)", href, re.I):
-            continue
-
-        d = dict(
-            store_slug=store, category=category, title=text, description="",
-            url=href, source=url, score=0.8,
-            start_at=None, end_at=None, price_old=None, price_new=None,
-            cashback=None, coupon_code=None
-        )
-        if put_deal(d):
-            added += 1
+        if not any(k in low for k in KEYWORDS): continue
+        if re.search(r"(login|signin|account|lk|cart|support|faq)", href, re.I): continue
+        d = dict(store_slug=store, category=category, title=text, description="", url=href,
+                 source=url, score=0.8, start_at=None, end_at=None, price_old=None, price_new=None,
+                 cashback=None, coupon_code=None)
+        if put_deal(d): added += 1
         seen.add(href)
-
     log.info(f"[SCRAPE][AUTO] added: {added}")
     return added
 
@@ -283,56 +235,38 @@ def scrape_rss(store, category, url) -> int:
     try:
         feed = feedparser.parse(url)
     except Exception as e:
-        log.warning(f"[SCRAPE][RSS] parse fail {store}: {e}")
-        return 0
+        log.warning(f"[SCRAPE][RSS] parse fail {store}: {e}"); return 0
     added = 0
     for e in feed.entries[:200]:
-        title = (e.get("title") or "").strip()
-        link  = e.get("link") or ""
-        summary = (e.get("summary") or "").strip()
-        if not title or not link:
-            continue
-        d = dict(
-            store_slug=store, category=category, title=title, description=summary,
-            url=link, source=url, score=0.7,
-            start_at=None, end_at=None, price_old=None, price_new=None,
-            cashback=None, coupon_code=None
-        )
-        if put_deal(d):
-            added += 1
+        title = (e.get("title") or "").strip(); link = e.get("link") or ""; summary = (e.get("summary") or "").strip()
+        if not title or not link: continue
+        d = dict(store_slug=store, category=category, title=title, description=summary, url=link,
+                 source=url, score=0.7, start_at=None, end_at=None, price_old=None, price_new=None,
+                 cashback=None, coupon_code=None)
+        if put_deal(d): added += 1
     log.info(f"[SCRAPE][RSS] added: {added}")
     return added
 
 def scrape_html_css(store, category, url, item_sel, title_sel, link_sel, desc_sel=None) -> int:
     log.info(f"[SCRAPE][HTML] {store} {url}")
     try:
-        r = requests.get(url, timeout=20, headers=HEADERS)
-        r.raise_for_status()
+        r = requests.get(url, timeout=20, headers=HEADERS); r.raise_for_status()
     except Exception as e:
-        log.warning(f"[SCRAPE][HTML] fetch fail {store}: {e}")
-        return 0
-    soup = BeautifulSoup(r.text, "html.parser")  # без lxml
-    items = soup.select(item_sel)[:200]
-    added = 0
+        log.warning(f"[SCRAPE][HTML] fetch fail {store}: {e}"); return 0
+    soup = BeautifulSoup(r.text, "html.parser")
+    items = soup.select(item_sel)[:200]; added = 0
     for it in items:
-        te = it.select_one(title_sel)
-        le = it.select_one(link_sel)
-        if not te or not le:
-            continue
-        title = " ".join(te.get_text().split())
-        link  = urljoin(url, le.get("href") or "")
-        desc  = ""
+        te = it.select_one(title_sel); le = it.select_one(link_sel)
+        if not te or not le: continue
+        title = " ".join(te.get_text().split()); link = urljoin(url, le.get("href") or "")
+        desc = ""
         if desc_sel:
             de = it.select_one(desc_sel)
             if de: desc = " ".join(de.get_text().split())
-        d = dict(
-            store_slug=store, category=category, title=title, description=desc,
-            url=link, source=url, score=0.9,
-            start_at=None, end_at=None, price_old=None, price_new=None,
-            cashback=None, coupon_code=None
-        )
-        if put_deal(d):
-            added += 1
+        d = dict(store_slug=store, category=category, title=title, description=desc, url=link,
+                 source=url, score=0.9, start_at=None, end_at=None, price_old=None, price_new=None,
+                 cashback=None, coupon_code=None)
+        if put_deal(d): added += 1
     log.info(f"[SCRAPE][HTML] added: {added}")
     return added
 
@@ -341,8 +275,7 @@ def run_all_sources() -> int:
     try:
         conf = json.loads(raw)
     except Exception as e:
-        log.error(f"[SCRAPE] bad STORES_JSON: {e}")
-        conf = {"stores":[]}
+        log.error(f"[SCRAPE] bad STORES_JSON: {e}"); conf = {"stores":[]}
     total = 0
     for s in conf.get("stores", []):
         t = s.get("type")
@@ -355,7 +288,7 @@ def run_all_sources() -> int:
                     s["url"], s["item_selector"], s["title_selector"], s["link_selector"],
                     s.get("desc_selector")
                 )
-            elif t in ("auto", "auto_html", None):
+            else:  # auto / auto_html / None
                 total += scrape_auto(s["store"], s.get("category","другое"), s["url"])
         except Exception:
             log.exception(f"[SCRAPE] error store={s}")
@@ -368,10 +301,7 @@ router = Router()
 def fmt_deal(d:dict) -> str:
     price = ""
     if d.get("price_new"):
-        if d.get("price_old"):
-            price = f"Цена: {d['price_new']} (было {d['price_old']})\n"
-        else:
-            price = f"Цена: {d['price_new']}\n"
+        price = f"Цена: {d['price_new']}\n" if not d.get("price_old") else f"Цена: {d['price_new']} (было {d['price_old']})\n"
     cb = f"Кэшбэк: {d['cashback']}\n" if d.get("cashback") else ""
     coup = f"Промокод: <code>{d['coupon_code']}</code>\n" if d.get("coupon_code") else ""
     deadline = f"Дедлайн: {d['end_at']}\n" if d.get("end_at") else ""
@@ -407,7 +337,7 @@ async def cmd_start(m: Message):
     else:
         await m.answer("Снова ты! Пробуй: /search ozon акции")
 
-@router.message(Command("help")))
+@router.message(Command("help"))
 async def cmd_help(m: Message):
     log.info(f"[HELP] from={m.from_user.id}")
     await m.answer(
@@ -486,10 +416,7 @@ async def cmd_search(m: Message):
             return await m.answer("Пока пусто. Нажми /reload, подожди 5–10 сек и попробуй снова.")
 
         for d in results:
-            await m.answer(
-                fmt_deal(d),
-                link_preview_options=LinkPreviewOptions(is_disabled=True)
-            )
+            await m.answer(fmt_deal(d), link_preview_options=LinkPreviewOptions(is_disabled=True))
     except Exception as e:
         log.exception("[SEARCH] handler error")
         await m.answer(f"Ошибка поиска: {e!s}")
@@ -508,23 +435,18 @@ async def main():
     if not BOT_TOKEN:
         raise RuntimeError("Set BOT_TOKEN env var")
     init_db()
-    bot = Bot(
-        token=BOT_TOKEN,
-        default=DefaultBotProperties(parse_mode=ParseMode.HTML)
-    )
+    bot = Bot(token=BOT_TOKEN, default=DefaultBotProperties(parse_mode=ParseMode.HTML))
     dp = Dispatcher()
     dp.include_router(router)
     global scheduler
     scheduler = AsyncIOScheduler(timezone=ZoneInfo(TIMEZONE))
-    # сбор каждые 30 минут + ежедневная чистка
     scheduler.add_job(scrape_job, "interval", minutes=30, id="scrape")
     scheduler.add_job(cleanup_old, "cron", hour=3, minute=0, id="cleanup")
     scheduler.start()
-    # первый сбор через 5 сек, чтобы база не была пустой
     loop = asyncio.get_running_loop()
     loop.call_later(5, lambda: asyncio.create_task(scrape_job()))
     await dp.start_polling(bot)
 
 if __name__ == "__main__":
     asyncio.run(main())
-                 
+  
