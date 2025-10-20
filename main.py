@@ -1,6 +1,6 @@
 # main.py — AI Halyava Bot (Py 3.13.4, aiogram 3.22)
 # one-file, long-polling; SQLite + APScheduler; без lxml
-import os, sqlite3, datetime, hashlib, json, asyncio
+import os, sqlite3, datetime, hashlib, json, asyncio, logging
 from typing import Optional, List
 
 import requests
@@ -14,6 +14,10 @@ from aiogram.enums import ParseMode
 from aiogram.filters import Command
 from aiogram.types import Message, LinkPreviewOptions
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
+
+# ======== LOGGING ========
+logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
+log = logging.getLogger("halyava")
 
 # ======== CONFIG ========
 BOT_TOKEN = os.environ.get("BOT_TOKEN", "")
@@ -89,6 +93,7 @@ def init_db():
     conn.commit()
 
 def now_utc_iso() -> str:
+    # оставим naive ISO, чтобы сравнения в SQLite были корректны по строке
     return datetime.datetime.utcnow().replace(microsecond=0).isoformat()
 
 def upsert_user(user_id:int, username:str=""):
@@ -164,7 +169,7 @@ def search_deals(store:Optional[str], category:Optional[str], limit:int=5) -> Li
         args.extend([category, f"%{category}%", f"%{category}%"])
     q += " AND (end_at IS NULL OR end_at>=?)"
     args.append(now_utc_iso())
-    # SQLite не поддерживает NULLS LAST — делаем руками:
+    # SQLite без NULLS LAST:
     q += " ORDER BY score DESC, (end_at IS NULL) ASC, end_at ASC, created_at DESC LIMIT ?"
     args.append(limit)
     cur = conn.execute(q, tuple(args))
@@ -174,6 +179,7 @@ def search_deals(store:Optional[str], category:Optional[str], limit:int=5) -> Li
 HEADERS = {"User-Agent":"Mozilla/5.0 (compatible; HalyavaBot/1.0)"}
 
 def scrape_rss(store, category, url) -> int:
+    log.info(f"[SCRAPE][RSS] {store} {url}")
     feed = feedparser.parse(url)
     added = 0
     for e in feed.entries[:100]:
@@ -190,9 +196,11 @@ def scrape_rss(store, category, url) -> int:
         )
         if put_deal(d):
             added += 1
+    log.info(f"[SCRAPE][RSS] added: {added}")
     return added
 
 def scrape_html_css(store, category, url, item_sel, title_sel, link_sel, desc_sel=None) -> int:
+    log.info(f"[SCRAPE][HTML] {store} {url}")
     r = requests.get(url, timeout=20, headers=HEADERS)
     r.raise_for_status()
     soup = BeautifulSoup(r.text, "html.parser")  # без lxml
@@ -218,12 +226,14 @@ def scrape_html_css(store, category, url, item_sel, title_sel, link_sel, desc_se
         )
         if put_deal(d):
             added += 1
+    log.info(f"[SCRAPE][HTML] added: {added}")
     return added
 
 def run_all_sources() -> int:
     try:
         conf = json.loads(STORES_JSON)
-    except Exception:
+    except Exception as e:
+        log.error(f"[SCRAPE] bad STORES_JSON: {e}")
         conf = {"stores":[]}
     total = 0
     for s in conf.get("stores", []):
@@ -236,6 +246,7 @@ def run_all_sources() -> int:
                 s["url"], s["item_selector"], s["title_selector"], s["link_selector"],
                 s.get("desc_selector")
             )
+    log.info(f"[SCRAPE] total added: {total}")
     return total
 
 # ======== BOT ========
@@ -258,8 +269,20 @@ def fmt_deal(d:dict) -> str:
         f"🔗 {d['url']}"
     )
 
+@router.message(Command("ping"))
+async def cmd_ping(m: Message):
+    log.info(f"[PING] from={m.from_user.id}")
+    await m.answer("pong")
+
+@router.message(Command("reload"))
+async def cmd_reload(m: Message):
+    log.info(f"[RELOAD] from={m.from_user.id}")
+    cnt = run_all_sources()
+    await m.answer(f"Обновил источники. Новых позиций: {cnt}")
+
 @router.message(Command("start"))
 async def cmd_start(m: Message):
+    log.info(f"[START] from={m.from_user.id} @{m.from_user.username}")
     upsert_user(m.from_user.id, m.from_user.username or "")
     sub = get_sub(m.from_user.id)
     if not sub:
@@ -273,15 +296,18 @@ async def cmd_start(m: Message):
 
 @router.message(Command("help"))
 async def cmd_help(m: Message):
+    log.info(f"[HELP] from={m.from_user.id}")
     await m.answer(
         "Команды:\n"
         "/search <магазин> [категория]\n"
         "/stores\n/categories\n/profile\n"
-        "/buy — подписка\n/redeem <код> — промокод"
+        "/buy — подписка\n/redeem <код> — промокод\n"
+        "/reload — обновить источники\n/ping — проверка связи"
     )
 
 @router.message(Command("profile"))
 async def cmd_profile(m: Message):
+    log.info(f"[PROFILE] from={m.from_user.id}")
     sub = get_sub(m.from_user.id)
     if not sub:
         await m.answer("Статус: нет подписки. /buy — оформить (249₽/мес)")
@@ -290,6 +316,7 @@ async def cmd_profile(m: Message):
 
 @router.message(Command("buy"))
 async def cmd_buy(m: Message):
+    log.info(f"[BUY] from={m.from_user.id}")
     await m.answer(
         f"Подписка {MONTHLY_PRICE_RUB}₽/мес.\n"
         f"На MVP — промокод от админа: /redeem КОД\n"
@@ -298,6 +325,7 @@ async def cmd_buy(m: Message):
 
 @router.message(Command("redeem"))
 async def cmd_redeem(m: Message):
+    log.info(f"[REDEEM] from={m.from_user.id} text={m.text!r}")
     parts = m.text.split(maxsplit=1)
     if len(parts) < 2:
         return await m.answer("Формат: /redeem КОД")
@@ -311,37 +339,47 @@ async def cmd_redeem(m: Message):
 
 @router.message(Command("stores"))
 async def cmd_stores(m: Message):
+    log.info(f"[STORES] from={m.from_user.id}")
     conn = db()
     r = conn.execute("SELECT DISTINCT store_slug FROM deals ORDER BY store_slug").fetchall()
     if not r:
-        return await m.answer("Пока пусто. Источники подтянем в фоне за 1–2 часа.")
+        return await m.answer("Пока пусто. Нажми /reload, затем /search.")
     await m.answer("Магазины:\n" + "\n".join("• "+x["store_slug"] for x in r))
 
 @router.message(Command("categories"))
 async def cmd_categories(m: Message):
+    log.info(f"[CATS] from={m.from_user.id}")
     conn = db()
     r = conn.execute("SELECT DISTINCT COALESCE(category,'—') c FROM deals ORDER BY c").fetchall()
     if not r:
-        return await m.answer("Пока пусто.")
+        return await m.answer("Пока пусто. Нажми /reload, затем /search.")
     await m.answer("Категории:\n" + "\n".join("• "+x["c"] for x in r))
 
 @router.message(Command("search"))
 async def cmd_search(m: Message):
-    args = m.text.split()[1:]
-    if not args:
-        return await m.answer("Формат: /search <магазин> [категория]")
-    store = args[0].lower()
-    category = args[1].lower() if len(args) > 1 else None
-    if not sub_active(m.from_user.id):
-        return await m.answer("Нужна активная подписка. /buy — оформить (есть триал в /start)")
-    results = search_deals(store, category, limit=5)
-    if not results:
-        return await m.answer("Пока пусто. Попробуй другой магазин/категорию.")
-    for d in results:
-        await m.answer(
-            fmt_deal(d),
-            link_preview_options=LinkPreviewOptions(is_disabled=True)
-        )
+    log.info(f"[SEARCH] from={m.from_user.id} text={m.text!r}")
+    try:
+        args = m.text.split()[1:]
+        if not args:
+            return await m.answer("Формат: /search <магазин> [категория]\nНапример: /search example подписки")
+        store = args[0].lower()
+        category = args[1].lower() if len(args) > 1 else None
+
+        if not sub_active(m.from_user.id):
+            return await m.answer("Нужна активная подписка. /buy — оформить (есть триал в /start)")
+
+        results = search_deals(store, category, limit=5)
+        if not results:
+            return await m.answer("Пока пусто. Нажми /reload, подожди 5–10 сек и попробуй снова.")
+
+        for d in results:
+            await m.answer(
+                fmt_deal(d),
+                link_preview_options=LinkPreviewOptions(is_disabled=True)
+            )
+    except Exception as e:
+        log.exception("[SEARCH] handler error")
+        await m.answer(f"Ошибка поиска: {e!s}")
 
 # ======== SCHEDULER ========
 scheduler: Optional[AsyncIOScheduler] = None
@@ -349,9 +387,9 @@ scheduler: Optional[AsyncIOScheduler] = None
 async def scrape_job():
     try:
         cnt = run_all_sources()
-        print(f"[SCRAPER] added: {cnt}")
+        log.info(f"[SCRAPER] added: {cnt}")
     except Exception as e:
-        print("[SCRAPER] error:", e)
+        log.exception("[SCRAPER] error")
 
 async def main():
     if not BOT_TOKEN:
@@ -367,11 +405,11 @@ async def main():
     scheduler = AsyncIOScheduler(timezone=ZoneInfo(TIMEZONE))
     scheduler.add_job(scrape_job, "interval", hours=2, id="scrape")
     scheduler.start()
-    # первый сбор через 60 сек, чтобы база не была пустой
+    # первый сбор через 5 сек, чтобы база не была пустой
     loop = asyncio.get_running_loop()
-    loop.call_later(60, lambda: asyncio.create_task(scrape_job()))
+    loop.call_later(5, lambda: asyncio.create_task(scrape_job()))
     await dp.start_polling(bot)
 
 if __name__ == "__main__":
     asyncio.run(main())
-  
+        
