@@ -1,82 +1,97 @@
+# main.py — Купон-бот: Admitad + CityAds + HTML
+# Python 3.13.4 ; aiogram 3.22.0 ; SQLite + APScheduler
+import os
+import re
+import json
+import html
+import time
+import asyncio
+import logging
+import sqlite3
+import threading
+import datetime
+from typing import Optional, List, Dict, Any
 
-    level=logging.INFO,
-    format="%(asctime)s %(levelname)s %(message)s"
-)
+import requests
+import feedparser
+from bs4 import BeautifulSoup
+
+from aiogram import Bot, Dispatcher, Router, F
+from aiogram.client.default import DefaultBotProperties
+from aiogram.enums import ParseMode
+from aiogram.filters import Command
+from aiogram.types import Message
+from apscheduler.schedulers.asyncio import AsyncIOScheduler
+
+# ---------- ЛОГИ ----------
+logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 log = logging.getLogger(__name__)
 
 # ---------- КОНФИГ ----------
-BOT_TOKEN = os.environ.get("BOT_TOKEN", "").strip()
+def _sanitize_token(raw: str) -> str:
+    if not raw:
+        return ""
+    # убрать BOM/невидимые и пробелы по краям/кавычки
+    to_strip = {
+        "\u200b": None, "\u200c": None, "\u200d": None, "\u200e": None, "\u200f": None,
+        "\ufeff": None
+    }
+    raw = raw.translate(to_strip).strip()
+    # если завернули в кавычки — снимем
+    if (raw.startswith('"') and raw.endswith('"')) or (raw.startswith("'") and raw.endswith("'")):
+        raw = raw[1:-1].strip()
+    return raw
+
+def _valid_token(t: str) -> bool:
+    return bool(re.fullmatch(r"\d+:[A-Za-z0-9_-]{30,}", t or ""))
+
+BOT_TOKEN = _sanitize_token(os.environ.get("BOT_TOKEN", ""))
+
 TIMEZONE = os.environ.get("TIMEZONE", "Europe/Moscow")
 DB_PATH = os.environ.get("DB_PATH", "/data/halyava.db")
-
 TRIAL_DAYS = int(os.environ.get("TRIAL_DAYS", "3"))
 MONTHLY_PRICE_RUB = int(os.environ.get("MONTHLY_PRICE_RUB", "249"))
 
 # Admitad
-ADMITAD_ACCESS_TOKEN = os.environ.get("ADMITAD_ACCESS_TOKEN", "").strip()
-ADMITAD_CLIENT_ID = os.environ.get("ADMITAD_CLIENT_ID", "").strip()
-ADMITAD_CLIENT_SECRET = os.environ.get("ADMITAD_CLIENT_SECRET", "").strip()
-ADMITAD_WEBSITE_ID = os.environ.get("ADMITAD_WEBSITE_ID", "").strip()  # обязателен для /coupons/website
+ADMITAD_ACCESS_TOKEN = os.environ.get("ADMITAD_ACCESS_TOKEN", "") or ""
+ADMITAD_CLIENT_ID = os.environ.get("ADMITAD_CLIENT_ID", "") or ""
+ADMITAD_CLIENT_SECRET = os.environ.get("ADMITAD_CLIENT_SECRET", "") or ""
+ADMITAD_WEBSITE_ID = os.environ.get("ADMITAD_WEBSITE_ID", "") or ""
 
 # CityAds
-CITYADS_COUPONS_URL = os.environ.get("CITYADS_COUPONS_URL", "").strip()
+CITYADS_COUPONS_URL = os.environ.get("CITYADS_COUPONS_URL", "") or ""
 
-# Официальные промо-страницы магазинов
+# Официальные промо-страницы магазинов (через запятую в ENV)
 OFFICIAL_PROMO_PAGES = [
-    u.strip() for u in os.environ.get("OFFICIAL_PROMO_PAGES", "").split(",") if u.strip()
+    u.strip() for u in (os.environ.get("OFFICIAL_PROMO_PAGES", "") or "").split(",") if u.strip()
 ]
 
-# Популярные магазины РФ + маркеты + еда (синонимы → канонический slug)
+# Популярные магазины РФ + маркеты + еда (алиасы → slug)
 STORE_ALIASES: Dict[str, str] = {
     # marketplaces
-    "ozon": "ozon",
-    "озон": "ozon",
-    "wildberries": "wildberries",
-    "вб": "wildberries",
-    "wild": "wildberries",
-    "wb": "wildberries",
-    "яндекс маркет": "yandex_market",
-    "я маркет": "yandex_market",
-    "ym": "yandex_market",
-    "aliexpress": "aliexpress",
-    "алиэкспресс": "aliexpress",
-
-    # электроника/бытовая
-    "mvideo": "mvideo",
-    "мвидео": "mvideo",
-    "eldorado": "eldorado",
-    "эльдорадо": "eldorado",
-    "dns": "dns_shop",
-    "днс": "dns_shop",
-    "citilink": "citilink",
-    "ситилинк": "citilink",
-    "svyaznoy": "svyaznoy",
-    "связной": "svyaznoy",
-    "technopark": "technopark",
-    "технопарк": "technopark",
-
-    # одежда/обувь
-    "lamoda": "lamoda",
-    "ла модa": "lamoda",
+    "ozon": "ozon", "озон": "ozon",
+    "wildberries": "wildberries", "вб": "wildberries", "wb": "wildberries",
+    "яндекс маркет": "yandex_market", "я маркет": "yandex_market", "ym": "yandex_market",
+    "aliexpress": "aliexpress", "алиэкспресс": "aliexpress",
+    # электроника
+    "mvideo": "mvideo", "мвидео": "mvideo",
+    "eldorado": "eldorado", "эльдорадо": "eldorado",
+    "dns": "dns_shop", "днс": "dns_shop",
+    "citilink": "citilink", "ситилинк": "citilink",
+    "svyaznoy": "svyaznoy", "связной": "svyaznoy",
+    "technopark": "technopark", "технопарк": "technopark",
+    # одежда
+    "lamoda": "lamoda", "ла мода": "lamoda",
     "asos": "asos",
-    "h&m": "hm",
-    "hm": "hm",
-
+    "hm": "hm", "h&m": "hm",
     # еда/доставка
-    "яндекс еда": "yandex_eats",
-    "yandex eats": "yandex_eats",
-    "delivery club": "delivery_club",
-    "деливери клаб": "delivery_club",
-    "самокат": "samokat",
-    "samokat": "samokat",
-    "vkusvill": "vkusvill",
-    "вкусвилл": "vkusvill",
-    "lenta": "lenta",
-    "лента": "lenta",
-    "perekrestok": "perekrestok",
-    "перекресток": "perekrestok",
+    "яндекс еда": "yandex_eats", "yandex eats": "yandex_eats",
+    "delivery club": "delivery_club", "деливери клаб": "delivery_club",
+    "самокат": "samokat", "samokat": "samokat",
+    "vkusvill": "vkusvill", "вкусвилл": "vkusvill",
+    "lenta": "lenta", "лента": "lenta",
+    "perekrestok": "perekrestok", "перекресток": "perekrestok",
 }
-
 POPULAR_STORES = sorted(set(STORE_ALIASES.values()))
 
 # ---------- БД ----------
@@ -105,8 +120,8 @@ def init_db():
     CREATE TABLE IF NOT EXISTS subscriptions(
       user_id INTEGER PRIMARY KEY,
       status TEXT,   -- trial|active|expired
-      until TEXT,    -- ISO date
-      plan TEXT,     -- monthly
+      until TEXT,
+      plan TEXT,
       updated_at TEXT DEFAULT CURRENT_TIMESTAMP
     );
     CREATE TABLE IF NOT EXISTS deals(
@@ -135,25 +150,18 @@ def init_db():
         conn.commit()
 
 def _now_iso_naive_utc() -> str:
-    # datetime.utcnow() — deprec, используем timezone-aware → затем делаем naive
     return datetime.datetime.now(datetime.timezone.utc).replace(tzinfo=None, microsecond=0).isoformat()
 
 def upsert_user(user_id:int, username:str=""):
     with _DB_LOCK:
         conn = db()
-        conn.execute(
-            "INSERT OR IGNORE INTO users(user_id, username) VALUES(?,?)",
-            (user_id, username or "")
-        )
+        conn.execute("INSERT OR IGNORE INTO users(user_id, username) VALUES(?,?)", (user_id, username or ""))
         conn.commit()
 
 def get_sub(user_id:int) -> Optional[dict]:
     with _DB_LOCK:
         conn = db()
-        r = conn.execute(
-            "SELECT status, until FROM subscriptions WHERE user_id=?",
-            (user_id,)
-        ).fetchone()
+        r = conn.execute("SELECT status, until FROM subscriptions WHERE user_id=?", (user_id,)).fetchone()
         return dict(r) if r else None
 
 def set_sub(user_id:int, status:str, until_iso:str, plan:str="monthly"):
@@ -172,7 +180,7 @@ def set_sub(user_id:int, status:str, until_iso:str, plan:str="monthly"):
 
 def sub_active(user_id:int) -> bool:
     sub = get_sub(user_id)
-    if not sub: 
+    if not sub:
         return False
     try:
         return datetime.datetime.fromisoformat(sub["until"]) >= datetime.datetime.now(datetime.timezone.utc).replace(tzinfo=None)
@@ -232,7 +240,9 @@ def search_deals(store_slug:str, limit:int=8) -> List[dict]:
             """,
             (store_slug, _now_iso_naive_utc(), limit)
         )
-        return [dict(r) for r in cur.fetchall()]
+        return [dict(r) for r in cur.fetchall()
+
+        ]
 
 def cleanup_old(days:int=60):
     threshold = (datetime.datetime.now(datetime.timezone.utc).replace(tzinfo=None) - datetime.timedelta(days=days)).isoformat()
@@ -241,7 +251,7 @@ def cleanup_old(days:int=60):
         conn.execute("DELETE FROM deals WHERE (end_at IS NOT NULL AND end_at < ?) OR created_at < ?", (threshold, threshold))
         conn.commit()
 
-# ---------- ВСПОМОГАТЕЛЬНОЕ ----------
+# ---------- УТИЛИТЫ ----------
 UA = {"User-Agent": "Mozilla/5.0 (compatible; HalyavaBot/1.2)"}
 
 def slug_for_query(q:str) -> Optional[str]:
@@ -251,22 +261,17 @@ def slug_for_query(q:str) -> Optional[str]:
 def esc(s:str) -> str:
     return html.escape(s or "")
 
-# ---------- ИНТЕГРАЦИИ ИСТОЧНИКОВ ----------
-# 1) Admitad Coupons API
-_admitad_cached_token: Dict[str, Any] = {"value": ADMITAD_ACCESS_TOKEN, "exp": 0}
+# ---------- ИСТОЧНИКИ ----------
+# 1) Admitad Coupons
+_admitad_cached_token: Dict[str, Any] = {"value": ADMITAD_ACCESS_TOKEN.strip(), "exp": 0}
 
 def admitad_get_token() -> Optional[str]:
-    # если токен уже есть и ещё не истёк — отдадим
     if _admitad_cached_token["value"] and _admitad_cached_token["exp"] > time.time():
         return _admitad_cached_token["value"]
-
-    if ADMITAD_ACCESS_TOKEN:
-        # статический токен из ENV (например, полученный вручную) — кэшируем на час
-        _admitad_cached_token["value"] = ADMITAD_ACCESS_TOKEN
+    if ADMITAD_ACCESS_TOKEN.strip():
+        _admitad_cached_token["value"] = ADMITAD_ACCESS_TOKEN.strip()
         _admitad_cached_token["exp"] = time.time() + 3600
         return _admitad_cached_token["value"]
-
-    # иначе пробуем client_credentials
     if not (ADMITAD_CLIENT_ID and ADMITAD_CLIENT_SECRET):
         return None
     try:
@@ -295,13 +300,7 @@ def pull_admitad() -> int:
     if not token:
         return 0
     url = f"https://api.admitad.com/coupons/website/{ADMITAD_WEBSITE_ID}/"
-    params = {
-        "limit": 500,
-        "language": "ru",
-        "region": "RU",
-        "status": "active",
-        "ordering": "-date_end"
-    }
+    params = {"limit": 500, "language": "ru", "region": "RU", "status": "active", "ordering": "-date_end"}
     headers = {"Authorization": f"Bearer {token}"}
     added = 0
     try:
@@ -309,10 +308,9 @@ def pull_admitad() -> int:
         r = requests.get(url, headers=headers, params=params, timeout=30)
         r.raise_for_status()
         js = r.json()
-        results = js.get("results") or js.get("results", [])
+        results = js.get("results") or []
         out = []
-        for it in results or []:
-            # важные поля в выдаче coupons/website: campaign, promocode, date_start, date_end, short_name/description
+        for it in results:
             campaign = (it.get("campaign") or {}).get("name") or ""
             code = it.get("promocode") or ""
             title = it.get("short_name") or it.get("code") or campaign
@@ -320,7 +318,7 @@ def pull_admitad() -> int:
             start_at = it.get("date_start")
             end_at = it.get("date_end")
             link = it.get("tracked_link") or it.get("goto_link") or it.get("link") or ""
-            # нормализуем магазин
+
             store_slug = None
             c = campaign.lower()
             for k, v in STORE_ALIASES.items():
@@ -328,35 +326,20 @@ def pull_admitad() -> int:
                     store_slug = v
                     break
             if not store_slug:
-                # fallback: берем первое слово кампании как slug
                 store_slug = re.sub(r"[^a-z0-9]+", "_", campaign.lower()).strip("_") or "unknown"
 
-            score = 1.0
-            if code:
-                score += 0.5
-            if end_at:
-                score += 0.2
-
+            score = 1.0 + (0.5 if code else 0) + (0.2 if end_at else 0)
             out.append(dict(
-                store_slug=store_slug,
-                title=title,
-                description=desc,
-                url=link,
-                coupon_code=code,
-                price_old=None,
-                price_new=None,
-                cashback=None,
-                start_at=start_at,
-                end_at=end_at,
-                source="admitad",
-                score=score
+                store_slug=store_slug, title=title, description=desc, url=link, coupon_code=code,
+                price_old=None, price_new=None, cashback=None,
+                start_at=start_at, end_at=end_at, source="admitad", score=score
             ))
         added += put_deals_bulk(out)
     except Exception as e:
         log.error("[ADMITAD] error: %s", e)
     return added
 
-# 2) CityAds купон-фид (JSON или XML)
+# 2) CityAds feed (JSON/XML)
 def pull_cityads() -> int:
     if not CITYADS_COUPONS_URL:
         return 0
@@ -366,12 +349,11 @@ def pull_cityads() -> int:
         r.raise_for_status()
         added = 0
         out: List[Dict[str,Any]] = []
-
         content_type = r.headers.get("Content-Type","").lower()
         if "json" in content_type or CITYADS_COUPONS_URL.endswith(".json"):
             data = r.json()
             items = data.get("coupons") or data.get("items") or data
-            for it in items:
+            for it in items if isinstance(items, list) else []:
                 store = (it.get("campaign") or it.get("advertiser") or {}).get("name") or it.get("shop") or ""
                 code = it.get("code") or it.get("coupon") or ""
                 title = it.get("title") or it.get("name") or store
@@ -387,20 +369,12 @@ def pull_cityads() -> int:
                         break
                 if not store_slug:
                     store_slug = re.sub(r"[^a-z0-9]+","_", s).strip("_") or "unknown"
-
                 out.append(dict(
-                    store_slug=store_slug,
-                    title=title,
-                    description=desc,
-                    url=link,
-                    coupon_code=code,
+                    store_slug=store_slug, title=title, description=desc, url=link, coupon_code=code,
                     price_old=None, price_new=None, cashback=None,
-                    start_at=start_at, end_at=end_at,
-                    source="cityads",
-                    score=0.9 + (0.4 if code else 0)
+                    start_at=start_at, end_at=end_at, source="cityads", score=0.9 + (0.4 if code else 0)
                 ))
         else:
-            # XML → feedparser (как RSS)
             feed = feedparser.parse(r.text)
             for e in feed.entries:
                 title = (e.get("title") or "").strip()
@@ -414,15 +388,9 @@ def pull_cityads() -> int:
                         store_slug = v
                         break
                 out.append(dict(
-                    store_slug=store_slug,
-                    title=title,
-                    description=summary,
-                    url=link,
-                    coupon_code=code,
+                    store_slug=store_slug, title=title, description=summary, url=link, coupon_code=code,
                     price_old=None, price_new=None, cashback=None,
-                    start_at=None, end_at=None,
-                    source="cityads_rss",
-                    score=0.7 + (0.3 if code else 0)
+                    start_at=None, end_at=None, source="cityads_rss", score=0.7 + (0.3 if code else 0)
                 ))
         added += put_deals_bulk(out)
         return added
@@ -430,11 +398,10 @@ def pull_cityads() -> int:
         log.error("[CITYADS] error: %s", e)
         return 0
 
-# 3) Официальные промо-страницы (простой HTML)
+# 3) Официальные промо-страницы
 def pull_official_pages() -> int:
     if not OFFICIAL_PROMO_PAGES:
         return 0
-    total = 0
     out: List[Dict[str,Any]] = []
     for url in OFFICIAL_PROMO_PAGES:
         try:
@@ -442,38 +409,27 @@ def pull_official_pages() -> int:
             r = requests.get(url, timeout=20, headers=UA)
             r.raise_for_status()
             soup = BeautifulSoup(r.text, "html.parser")
-
-            # общие эвристики: «промокод», «введите код», «код: XXXX»
             texts = soup.get_text(" ", strip=True)
             for m in re.finditer(r"(?:промокод|код)\s*[:\- ]\s*([A-Z0-9\-]{4,16})", texts, re.IGNORECASE):
                 code = m.group(1)
                 title = "Промокод"
                 desc = "Официальная промо-страница"
-                # попытаемся угадать магазин по домену
-                host = re.sub(r"^https?://", "", url)
-                host = host.split("/")[0].lower()
+                host = re.sub(r"^https?://", "", url).split("/")[0].lower()
                 store_slug = "unknown"
                 for k, v in STORE_ALIASES.items():
                     if k in host or k.replace(" ", "") in host:
                         store_slug = v
                         break
                 out.append(dict(
-                    store_slug=store_slug,
-                    title=title,
-                    description=desc,
-                    url=url,
-                    coupon_code=code,
+                    store_slug=store_slug, title=title, description=desc, url=url, coupon_code=code,
                     price_old=None, price_new=None, cashback=None,
-                    start_at=None, end_at=None,
-                    source="official_page",
-                    score=0.6
+                    start_at=None, end_at=None, source="official_page", score=0.6
                 ))
         except Exception as e:
             log.warning("[PROMO_PAGE] %s error: %s", url, e)
-    total += put_deals_bulk(out)
-    return total
+    return put_deals_bulk(out)
 
-# ---------- СБОР ИСТОЧНИКОВ ----------
+# Сбор всех источников
 def run_all_sources() -> int:
     total = 0
     total += pull_admitad()
@@ -482,7 +438,7 @@ def run_all_sources() -> int:
     log.info("[SCRAPE] total added: %s", total)
     return total
 
-# ---------- ФОРМАТ ОТВЕТА ----------
+# ---------- ФОРМАТИРОВАНИЕ ----------
 def fmt_deal(d:dict) -> str:
     lines = []
     lines.append(f"🛍 {esc(d.get('store_slug') or 'магазин')} — {esc(d.get('title') or '')}")
@@ -499,7 +455,6 @@ def fmt_deal(d:dict) -> str:
     if d.get("end_at"):
         lines.append(f"Действует до: {esc(d['end_at'])}")
     if d.get("description"):
-        # коротко
         desc = (d["description"] or "")
         if len(desc) > 160:
             desc = desc[:157] + "…"
@@ -524,9 +479,9 @@ async def cmd_start(m: Message):
             disable_web_page_preview=True
         )
     else:
-        await m.answer("Снова здесь! Попробуй: <code>/search ozon</code>", disable_web_page_preview=True)
+        await m.answer("Снова здесь! Попробуй: /search ozon", disable_web_page_preview=True)
 
-@router.message(Command("help"))
+@router.message(Command("help")))
 async def cmd_help(m: Message):
     await m.answer(
         "Команды:\n"
@@ -535,7 +490,7 @@ async def cmd_help(m: Message):
         "• /profile — статус подписки\n"
         f"• /buy — оформить подписку ({MONTHLY_PRICE_RUB}₽/мес)\n"
         "• /redeem <код> — активировать промокод подписки\n"
-        "• /update — принудительно обновить источники (для админа)\n",
+        "• /update — обновить источники вручную\n",
         disable_web_page_preview=True
     )
 
@@ -554,8 +509,8 @@ async def cmd_profile(m: Message):
 async def cmd_buy(m: Message):
     await m.answer(
         f"Подписка {MONTHLY_PRICE_RUB}₽/мес.\n"
-        f"На MVP доступна активация через промокод администратора: /redeem КОД.\n"
-        f"Позже прикрутим оплату.",
+        "На MVP доступна активация через промокод администратора: /redeem КОД.\n"
+        "Позже прикрутим оплату.",
         disable_web_page_preview=True
     )
 
@@ -563,16 +518,14 @@ async def cmd_buy(m: Message):
 async def cmd_redeem(m: Message):
     parts = (m.text or "").split(maxsplit=1)
     if len(parts) < 2 or not parts[1].strip():
-        return await m.answer("Формат: <code>/redeem КОД</code>")
-    code = parts[1].strip()
-    # на MVP активируем месяц без проверки — можешь потом сверять с ENV списком
+        return await m.answer("Формат: /redeem КОД")
+    # mvp: активируем месяц без проверки кода
     until = grant_month(m.from_user.id, 1)
     await m.answer(f"Подписка активна до {esc(until)}. /profile — проверить")
 
 @router.message(Command("update"))
 async def cmd_update(m: Message):
-    # простой «админ»: разрешим всем, но поставим ограничение по частоте
-    await m.answer("Пошёл сбор источников…")
+    await m.answer("Собираю источники…")
     added = run_all_sources()
     await m.answer(f"Готово. Добавлено: {added}")
 
@@ -581,11 +534,10 @@ async def cmd_search(m: Message):
     log.info("[SEARCH] from=%s text=%r", m.from_user.id, m.text)
     args = (m.text or "").split()[1:]
     if not args:
-        # ВАЖНО: без HTML-угловых скобок, чтобы не было ошибки parse entities
         return await m.answer("Формат: /search магазин\nПример: /search ozon")
 
     if not sub_active(m.from_user.id):
-        return await m.answer("Нужна активная подписка. /buy — оформить (есть бесплатный триал в /start)")
+        return await m.answer("Нужна активная подписка. /buy — оформить (в /start есть триал)")
 
     store_slug = slug_for_query(" ".join(args))
     if not store_slug:
@@ -594,7 +546,6 @@ async def cmd_search(m: Message):
     results = search_deals(store_slug, limit=8)
     if not results:
         await m.answer("По этому магазину пока пусто. Запрашиваю источники…")
-        # форс-сбор для конкретного магазина (пока собираем все)
         run_all_sources()
         results = search_deals(store_slug, limit=8)
         if not results:
@@ -604,9 +555,7 @@ async def cmd_search(m: Message):
         try:
             await m.answer(fmt_deal(d), disable_web_page_preview=True)
         except Exception:
-            # на всякий случай отправим без HTML
-            txt = re.sub(r"<.*?>", "", fmt_deal(d))
-            await m.answer(txt, disable_web_page_preview=True)
+            await m.answer(re.sub(r"<.*?>", "", fmt_deal(d)), disable_web_page_preview=True)
 
 # ---------- ПЛАНИРОВЩИК ----------
 scheduler: Optional[AsyncIOScheduler] = None
@@ -628,13 +577,17 @@ async def cleanup_job():
 async def main():
     if not BOT_TOKEN:
         raise RuntimeError("Set BOT_TOKEN env var")
+    if not _valid_token(BOT_TOKEN):
+        # Поясняем, что именно не так
+        masked = (BOT_TOKEN[:4] + "…" + BOT_TOKEN[-6:]) if BOT_TOKEN else "(empty)"
+        raise RuntimeError(
+            "BOT_TOKEN выглядит некорректно. Дай токен целиком в формате <id:secret>, "
+            "например 8284074356:AAE… (без кавычек/пробелов). Сейчас: " + masked
+        )
 
     init_db()
 
-    bot = Bot(
-        token=BOT_TOKEN,
-        default=DefaultBotProperties(parse_mode=ParseMode.HTML)
-    )
+    bot = Bot(token=BOT_TOKEN, default=DefaultBotProperties(parse_mode=ParseMode.HTML))
     dp = Dispatcher()
     dp.include_router(router)
 
@@ -644,7 +597,6 @@ async def main():
     scheduler.add_job(cleanup_job, "interval", hours=12, id="cleanup")
     scheduler.start()
 
-    # первый сбор — через 10 сек, чтобы база не была пустой
     loop = asyncio.get_event_loop()
     loop.call_later(10, lambda: asyncio.create_task(scrape_job()))
 
