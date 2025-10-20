@@ -55,8 +55,8 @@ DEFAULT_STORES_JSON = """
     { "type":"auto", "store":"rivegauche",  "category":"акции", "url":"https://www.rivegauche.ru/promo" },
 
     /* ===== Аптеки ===== */
-    { "type":"auto", "store":"apteka",   "category":"акции", "url":"https://apteka.ru/discounts" },
-    { "type":"auto", "store":"rigla",    "category":"акции", "url":"https://www.rigla.ru/actions/" },
+    { "type":"auto", "store":"apteka",    "category":"акции", "url":"https://apteka.ru/discounts" },
+    { "type":"auto", "store":"rigla",     "category":"акции", "url":"https://www.rigla.ru/actions/" },
     { "type":"auto", "store":"aptekamos", "category":"акции", "url":"https://www.apteka-mos.ru/actions/" },
 
     /* ===== Продукты/сети ===== */
@@ -79,111 +79,130 @@ DEFAULT_STORES_JSON = """
 PROMO_CODES = {c.strip() for c in os.environ.get("PROMO_CODES", "").split(",") if c.strip()}
 
 # ======== DB LAYER ========
-def db() -> sqlite3.Connection:
+def connect() -> sqlite3.Connection:
+    """Создаём новое соединение с безопасными PRAGMA и таймаутом.
+       ВАЖНО: используем контекстный менеджер `with connect() as conn:` и быстро закрываем соединение,
+       чтобы не держать блокировки файла."""
     os.makedirs(os.path.dirname(DB_PATH), exist_ok=True)
-    conn = sqlite3.connect(DB_PATH, check_same_thread=False)
+    conn = sqlite3.connect(
+        DB_PATH,
+        timeout=60.0,               # ждём до 60 сек, если кто-то держит запись
+        check_same_thread=False     # работаем из корутин в одном процессе
+    )
     conn.row_factory = sqlite3.Row
+    # ускоряем и включаем множественные читатели / один писатель
+    conn.execute("PRAGMA journal_mode=WAL;")
+    conn.execute("PRAGMA synchronous=NORMAL;")
+    conn.execute("PRAGMA busy_timeout=60000;")
     return conn
 
 def init_db():
-    conn = db()
-    conn.executescript("""
-    CREATE TABLE IF NOT EXISTS users(
-      user_id INTEGER PRIMARY KEY,
-      username TEXT,
-      created_at TEXT DEFAULT CURRENT_TIMESTAMP
-    );
+    with connect() as conn:
+        conn.executescript("""
+        CREATE TABLE IF NOT EXISTS users(
+          user_id INTEGER PRIMARY KEY,
+          username TEXT,
+          created_at TEXT DEFAULT CURRENT_TIMESTAMP
+        );
 
-    CREATE TABLE IF NOT EXISTS subscriptions(
-      user_id INTEGER PRIMARY KEY,
-      status TEXT,   -- trial|active|expired
-      until TEXT,    -- ISO date
-      plan TEXT,     -- monthly
-      updated_at TEXT DEFAULT CURRENT_TIMESTAMP
-    );
+        CREATE TABLE IF NOT EXISTS subscriptions(
+          user_id INTEGER PRIMARY KEY,
+          status TEXT,   -- trial|active|expired
+          until TEXT,    -- ISO date
+          plan TEXT,     -- monthly
+          updated_at TEXT DEFAULT CURRENT_TIMESTAMP
+        );
 
-    CREATE TABLE IF NOT EXISTS deals(
-      id INTEGER PRIMARY KEY AUTOINCREMENT,
-      store_slug TEXT,
-      category TEXT,
-      title TEXT,
-      description TEXT,
-      url TEXT,
-      price_old REAL,
-      price_new REAL,
-      cashback REAL,
-      coupon_code TEXT,
-      start_at TEXT,
-      end_at TEXT,
-      created_at TEXT DEFAULT CURRENT_TIMESTAMP,
-      source TEXT,
-      hash TEXT UNIQUE,
-      score REAL DEFAULT 0
-    );
+        CREATE TABLE IF NOT EXISTS deals(
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          store_slug TEXT,
+          category TEXT,
+          title TEXT,
+          description TEXT,
+          url TEXT,
+          price_old REAL,
+          price_new REAL,
+          cashback REAL,
+          coupon_code TEXT,
+          start_at TEXT,
+          end_at TEXT,
+          created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+          source TEXT,
+          hash TEXT UNIQUE,
+          score REAL DEFAULT 0
+        );
 
-    CREATE INDEX IF NOT EXISTS idx_deals_store ON deals(store_slug);
-    CREATE INDEX IF NOT EXISTS idx_deals_cat ON deals(category);
-    CREATE INDEX IF NOT EXISTS idx_deals_end ON deals(end_at);
-    """)
-    conn.commit()
+        CREATE INDEX IF NOT EXISTS idx_deals_store ON deals(store_slug);
+        CREATE INDEX IF NOT EXISTS idx_deals_cat ON deals(category);
+        CREATE INDEX IF NOT EXISTS idx_deals_end ON deals(end_at);
+        """)
 
 def now_utc_iso() -> str:
     # Делаем naive ISO в UTC (без таймзоны), чтобы строковые сравнения в SQLite были корректны
     return datetime.datetime.now(datetime.timezone.utc).replace(tzinfo=None, microsecond=0).isoformat()
 
 def upsert_user(user_id:int, username:str=""):
-    conn = db()
-    conn.execute("INSERT OR IGNORE INTO users(user_id, username) VALUES(?,?)", (user_id, username or ""))
-    conn.commit()
+    with connect() as conn:
+        conn.execute(
+            "INSERT OR IGNORE INTO users(user_id, username) VALUES(?,?)",
+            (user_id, username or "")
+        )
 
 def get_sub(user_id:int) -> Optional[dict]:
-    conn = db()
-    r = conn.execute("SELECT status, until FROM subscriptions WHERE user_id=?", (user_id,)).fetchone()
+    with connect() as conn:
+        r = conn.execute(
+            "SELECT status, until FROM subscriptions WHERE user_id=?",
+            (user_id,)
+        ).fetchone()
     return dict(r) if r else None
 
 def set_sub(user_id:int, status:str, until_iso:str, plan:str="monthly"):
-    conn = db()
-    conn.execute("""
-        INSERT INTO subscriptions(user_id,status,until,plan,updated_at)
-        VALUES(?,?,?,?,?)
-        ON CONFLICT(user_id) DO UPDATE
-        SET status=excluded.status, until=excluded.until, updated_at=excluded.updated_at
-    """, (user_id, status, until_iso, plan, now_utc_iso()))
-    conn.commit()
+    with connect() as conn:
+        conn.execute("""
+            INSERT INTO subscriptions(user_id,status,until,plan,updated_at)
+            VALUES(?,?,?,?,?)
+            ON CONFLICT(user_id) DO UPDATE
+            SET status=excluded.status, until=excluded.until, updated_at=excluded.updated_at
+        """, (user_id, status, until_iso, plan, now_utc_iso()))
 
 def sub_active(user_id:int) -> bool:
     sub = get_sub(user_id)
-    if not sub: return False
+    if not sub:
+        return False
     try:
-        return datetime.datetime.fromisoformat(sub["until"]) >= datetime.datetime.now(datetime.timezone.utc).replace(tzinfo=None)
-    except: 
+        return datetime.datetime.fromisoformat(sub["until"]) >= \
+               datetime.datetime.now(datetime.timezone.utc).replace(tzinfo=None)
+    except Exception:
         return False
 
 def grant_trial(user_id:int, days:int=TRIAL_DAYS) -> str:
-    until = (datetime.datetime.now(datetime.timezone.utc).replace(tzinfo=None) + datetime.timedelta(days=days)).replace(microsecond=0).isoformat()
+    until = (datetime.datetime.now(datetime.timezone.utc).replace(tzinfo=None)
+             + datetime.timedelta(days=days)).replace(microsecond=0).isoformat()
     set_sub(user_id, "trial", until)
     return until
 
 def grant_month(user_id:int, months:int=1) -> str:
-    until = (datetime.datetime.now(datetime.timezone.utc).replace(tzinfo=None) + datetime.timedelta(days=30*months)).replace(microsecond=0).isoformat()
+    until = (datetime.datetime.now(datetime.timezone.utc).replace(tzinfo=None)
+             + datetime.timedelta(days=30*months)).replace(microsecond=0).isoformat()
     set_sub(user_id, "active", until)
     return until
 
 def put_deal(d:dict) -> bool:
-    conn = db()
     h = hashlib.sha256((d.get("url","") + d.get("title","")).encode("utf-8")).hexdigest()
     d["hash"] = h
     keys = ["store_slug","category","title","description","url","price_old","price_new","cashback","coupon_code","start_at","end_at","source","score","hash"]
     vals = [d.get(k) for k in keys]
     try:
-        conn.execute(f"INSERT INTO deals({','.join(keys)}) VALUES({','.join(['?']*len(keys))})", vals)
-        conn.commit()
+        with connect() as conn:
+            conn.execute(
+                f"INSERT INTO deals({','.join(keys)}) VALUES({','.join(['?']*len(keys))})",
+                vals
+            )
         return True
     except sqlite3.IntegrityError:
         return False
 
 def search_deals(store:Optional[str], category:Optional[str], limit:int=5) -> List[dict]:
-    conn = db()
     q = "SELECT * FROM deals WHERE 1=1"
     args = []
     if store:
@@ -197,20 +216,23 @@ def search_deals(store:Optional[str], category:Optional[str], limit:int=5) -> Li
     # SQLite без NULLS LAST:
     q += " ORDER BY score DESC, (end_at IS NULL) ASC, end_at ASC, created_at DESC LIMIT ?"
     args.append(limit)
-    cur = conn.execute(q, tuple(args))
-    return [dict(r) for r in cur.fetchall()]
+    with connect() as conn:
+        cur = conn.execute(q, tuple(args))
+        rows = cur.fetchall()
+    return [dict(r) for r in rows]
 
 def cleanup_old(ttl_days: int = 14):
     """Удаляем устаревшие сделки: просроченные по end_at или старше TTL по created_at."""
     now = now_utc_iso()
-    older_than = (datetime.datetime.now(datetime.timezone.utc).replace(tzinfo=None) - datetime.timedelta(days=ttl_days)).replace(microsecond=0).isoformat()
-    conn = db()
-    cur = conn.execute(
-        "DELETE FROM deals WHERE (end_at IS NOT NULL AND end_at < ?) OR (created_at < ?)",
-        (now, older_than),
-    )
-    conn.commit()
-    log.info(f"[CLEANUP] deleted={cur.rowcount}")
+    older_than = (datetime.datetime.now(datetime.timezone.utc).replace(tzinfo=None)
+                  - datetime.timedelta(days=ttl_days)).replace(microsecond=0).isoformat()
+    with connect() as conn:
+        cur = conn.execute(
+            "DELETE FROM deals WHERE (end_at IS NOT NULL AND end_at < ?) OR (created_at < ?)",
+            (now, older_than),
+        )
+        deleted = cur.rowcount
+    log.info(f"[CLEANUP] deleted={deleted}")
 
 # ======== SCRAPERS ========
 HEADERS = {"User-Agent":"Mozilla/5.0 (compatible; HalyavaBot/1.0)"}
@@ -239,7 +261,7 @@ def scrape_auto(store, category, url) -> int:
         low = text.lower()
         if not any(k in low for k in KEYWORDS):
             continue
-        # Часто встречаются дубль-якоря и служебные ссылки — немного фильтруем
+        # фильтр лишних ссылок
         if re.search(r"(login|signin|account|lk|cart|support|faq)", href, re.I):
             continue
 
@@ -335,7 +357,7 @@ def run_all_sources() -> int:
                 )
             elif t in ("auto", "auto_html", None):
                 total += scrape_auto(s["store"], s.get("category","другое"), s["url"])
-        except Exception as e:
+        except Exception:
             log.exception(f"[SCRAPE] error store={s}")
     log.info(f"[SCRAPE] total added: {total}")
     return total
@@ -379,20 +401,20 @@ async def cmd_start(m: Message):
     if not sub:
         till = grant_trial(m.from_user.id, TRIAL_DAYS)
         await m.answer(
-            f"Привет! Включил бесплатный триал до {till}.\n"
-            f"Команды: /search, /buy, /profile, /stores, /categories, /redeem КОД, /help"
+            "Привет! Включил бесплатный триал до {till}.\n"
+            "Команды: /search, /buy, /profile, /stores, /categories, /redeem КОД, /help".format(till=till)
         )
     else:
         await m.answer("Снова ты! Пробуй: /search ozon акции")
 
-@router.message(Command("help"))
+@router.message(Command("help")))
 async def cmd_help(m: Message):
     log.info(f"[HELP] from={m.from_user.id}")
     await m.answer(
         "Команды:\n"
-        "/search <магазин> [категория]\n"
+        "/search &lt;магазин&gt; [категория]\n"
         "/stores\n/categories\n/profile\n"
-        "/buy — подписка\n/redeem <код> — промокод\n"
+        "/buy — подписка\n/redeem &lt;код&gt; — промокод\n"
         "/reload — обновить источники\n/ping — проверка связи"
     )
 
@@ -419,7 +441,7 @@ async def cmd_redeem(m: Message):
     log.info(f"[REDEEM] from={m.from_user.id} text={m.text!r}")
     parts = m.text.split(maxsplit=1)
     if len(parts) < 2:
-        return await m.answer("Формат: /redeem КОД")
+        return await m.answer("Формат: /redeem &lt;код&gt;")
     code = parts[1].strip()
     if not code:
         return await m.answer("Пустой код.")
@@ -431,8 +453,8 @@ async def cmd_redeem(m: Message):
 @router.message(Command("stores"))
 async def cmd_stores(m: Message):
     log.info(f"[STORES] from={m.from_user.id}")
-    conn = db()
-    r = conn.execute("SELECT DISTINCT store_slug FROM deals ORDER BY store_slug").fetchall()
+    with connect() as conn:
+        r = conn.execute("SELECT DISTINCT store_slug FROM deals ORDER BY store_slug").fetchall()
     if not r:
         return await m.answer("Пока пусто. Нажми /reload, затем /search.")
     await m.answer("Магазины:\n" + "\n".join("• "+x["store_slug"] for x in r))
@@ -440,8 +462,8 @@ async def cmd_stores(m: Message):
 @router.message(Command("categories"))
 async def cmd_categories(m: Message):
     log.info(f"[CATS] from={m.from_user.id}")
-    conn = db()
-    r = conn.execute("SELECT DISTINCT COALESCE(category,'—') c FROM deals ORDER BY c").fetchall()
+    with connect() as conn:
+        r = conn.execute("SELECT DISTINCT COALESCE(category,'—') c FROM deals ORDER BY c").fetchall()
     if not r:
         return await m.answer("Пока пусто. Нажми /reload, затем /search.")
     await m.answer("Категории:\n" + "\n".join("• "+x["c"] for x in r))
@@ -452,7 +474,7 @@ async def cmd_search(m: Message):
     try:
         args = m.text.split()[1:]
         if not args:
-            return await m.answer("Формат: /search <магазин> [категория]\nНапример: /search ozon акции")
+            return await m.answer("Формат: /search &lt;магазин&gt; [категория]\nНапример: /search ozon акции")
         store = args[0].lower()
         category = args[1].lower() if len(args) > 1 else None
 
@@ -505,4 +527,4 @@ async def main():
 
 if __name__ == "__main__":
     asyncio.run(main())
-                
+                 
