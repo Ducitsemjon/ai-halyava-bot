@@ -1,5 +1,5 @@
-# main.py — AI Halyava Bot (one-file, Py 3.13.4, aiogram 3.22)
-# long-polling; SQLite + APScheduler; без lxml
+# main.py — AI Halyava Bot (Py 3.13.4, aiogram 3.22)
+# one-file, long-polling; SQLite + APScheduler; без lxml
 import os, sqlite3, datetime, hashlib, json, asyncio
 from typing import Optional, List
 
@@ -271,7 +271,7 @@ async def cmd_start(m: Message):
     else:
         await m.answer("Снова ты! Пробуй: /search example подписки")
 
-@router.message(Command("help")))
+@router.message(Command("help"))
 async def cmd_help(m: Message):
     await m.answer(
         "Команды:\n"
@@ -280,7 +280,7 @@ async def cmd_help(m: Message):
         "/buy — подписка\n/redeem <код> — промокод"
     )
 
-@router.message(Command("profile")))
+@router.message(Command("profile"))
 async def cmd_profile(m: Message):
     sub = get_sub(m.from_user.id)
     if not sub:
@@ -288,7 +288,7 @@ async def cmd_profile(m: Message):
     else:
         await m.answer(f"Статус: {sub['status']} до {sub['until']}")
 
-@router.message(Command("buy")))
+@router.message(Command("buy"))
 async def cmd_buy(m: Message):
     await m.answer(
         f"Подписка {MONTHLY_PRICE_RUB}₽/мес.\n"
@@ -296,7 +296,7 @@ async def cmd_buy(m: Message):
         f"(Позже подключим оплату через Stars/CryptoBot)."
     )
 
-@router.message(Command("redeem")))
+@router.message(Command("redeem"))
 async def cmd_redeem(m: Message):
     parts = m.text.split(maxsplit=1)
     if len(parts) < 2:
@@ -309,7 +309,7 @@ async def cmd_redeem(m: Message):
     until = grant_month(m.from_user.id, 1)
     await m.answer(f"Подписка активна до {until}. /profile — проверить")
 
-@router.message(Command("stores")))
+@router.message(Command("stores"))
 async def cmd_stores(m: Message):
     conn = db()
     r = conn.execute("SELECT DISTINCT store_slug FROM deals ORDER BY store_slug").fetchall()
@@ -317,7 +317,7 @@ async def cmd_stores(m: Message):
         return await m.answer("Пока пусто. Источники подтянем в фоне за 1–2 часа.")
     await m.answer("Магазины:\n" + "\n".join("• "+x["store_slug"] for x in r))
 
-@router.message(Command("categories")))
+@router.message(Command("categories"))
 async def cmd_categories(m: Message):
     conn = db()
     r = conn.execute("SELECT DISTINCT COALESCE(category,'—') c FROM deals ORDER BY c").fetchall()
@@ -325,7 +325,7 @@ async def cmd_categories(m: Message):
         return await m.answer("Пока пусто.")
     await m.answer("Категории:\n" + "\n".join("• "+x["c"] for x in r))
 
-@router.message(Command("search")))
+@router.message(Command("search"))
 async def cmd_search(m: Message):
     args = m.text.split()[1:]
     if not args:
