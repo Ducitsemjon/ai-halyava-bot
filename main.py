@@ -1,29 +1,4 @@
-# main.py — AI Halyava Bot (купон-бот с Admitad + CityAds + HTML)
-# Python 3.13.4 ; aiogram 3.22.0 ; long-polling ; SQLite + APScheduler
-import os
-import re
-import json
-import html
-import time
-import asyncio
-import logging
-import sqlite3
-import threading
-import datetime
-from typing import Optional, List, Dict, Any
-import requests
-import feedparser
-from bs4 import BeautifulSoup
 
-from aiogram import Bot, Dispatcher, Router, F
-from aiogram.client.default import DefaultBotProperties
-from aiogram.enums import ParseMode
-from aiogram.filters import Command
-from aiogram.types import Message
-from apscheduler.schedulers.asyncio import AsyncIOScheduler
-
-# ---------- ЛОГИ ----------
-logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s %(levelname)s %(message)s"
 )
