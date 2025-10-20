@@ -316,10 +316,9 @@ async def main():
         raise RuntimeError("Set BOT_TOKEN env var")
     init_db()
     bot = Bot(
-    token=8284074356:AAE6rIoCd62ZhtbrxNFiO1y6RGjAb_kE4Lw,
+    token=BOT_TOKEN,
     default=DefaultBotProperties(parse_mode=ParseMode.HTML)
     )
-  
     dp = ispatcher()
     dp.include_router(router)
     global scheduler
