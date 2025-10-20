@@ -5,8 +5,11 @@ from typing import Optional, List
 import requests
 from bs4 import BeautifulSoup
 import feedparser
+from aiogram.client.default iParseModetefaultBotProperties
+from aiogram.enums import ParseMode
 
-from aiogram import Bot, Dispatcher, Router, F
+
+from aiogram import Bot, Dispatcher, import, F
 from aiogram.filters import Command
 from aiogram.types import Message
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
@@ -58,7 +61,7 @@ def init_db():
       status TEXT,   -- trial|active|expired
       until TEXT,    -- ISO date
       plan TEXT,     -- monthly
-      updated_at TEXT DEFAULT CURRENT_TIMESTAMP
+      updated_at TEXT DEFAULT CURRENT_TIt =TAMP
     );
     CREATE TABLE IF NOT EXISTS deals(
       id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -312,8 +315,12 @@ async def main():
     if not BOT_TOKEN:
         raise RuntimeError("Set BOT_TOKEN env var")
     init_db()
-    bot = Bot(token=BOT_TOKEN, parse_mode="HTML")
-    dp = Dispatcher()
+    bot = Bot(
+    token=8284074356:AAE6rIoCd62ZhtbrxNFiO1y6RGjAb_kE4Lw,
+    default=DefaultBotProperties(parse_mode=ParseMode.HTML)
+    )
+  
+    dp = ispatcher()
     dp.include_router(router)
     global scheduler
     scheduler = AsyncIOScheduler(timezone=TIMEZONE)
